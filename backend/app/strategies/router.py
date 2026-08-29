@@ -491,6 +491,7 @@ async def get_user_trace_detail(
     )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="User trace timeline retrieved", data=dto, requestId=request_id)
+    
 
 @router.get("/admin/execution-batches/{batchId}/failure-summary", response_model=ApiResponse[ExecutionFailureSummaryResponse])
 async def get_failure_summary(
