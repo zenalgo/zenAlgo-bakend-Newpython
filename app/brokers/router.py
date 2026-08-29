@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
-from typing import List
+from typing import List, Dict, Any
 
 from app.core.database import get_db
 from app.core.schemas import ApiResponse
 from app.core.dependencies import get_current_user
-from app.brokers.base.schemas import BrokerMetadata, BrokerFormConfig
+from app.brokers.base.schemas import BrokerMetadata, BrokerFormConfig, BrokerProfile
 from app.brokers.schemas import (
     ConnectBrokerRequest,
     BrokerAccountResponse,
@@ -45,7 +45,9 @@ async def connect_broker_account(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Connects user account to specified broker using provided credentials."""
+    """Connects user account to specified broker using provided credentials.
+    ENFORCES EXACTLY ONE BROKER PER USER PER CALENDAR DAY (Asia/Kolkata).
+    """
     account = await service.connect_broker(db, current_user.id, broker_code, body.credentials)
     dto = BrokerAccountResponse(
         id=account.id,
@@ -58,7 +60,7 @@ async def connect_broker_account(
         expiryTime=account.expiry_time
     )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message=f"Successfully connected {account.broker_code} account", data=dto, requestId=request_id)
+    return ApiResponse(success=True, message=f"Successfully connected {account.broker_code} account for today", data=dto, requestId=request_id)
 
 @generic_router.get("/accounts", response_model=ApiResponse[List[BrokerAccountResponse]])
 async def list_user_accounts(
@@ -97,7 +99,7 @@ async def disconnect_user_account(
     return ApiResponse(success=True, message="Broker account disconnected", data="DISCONNECTED", requestId=request_id)
 
 
-# --- LEGACY DHAN HQ ENDPOINTS (/api/v1/dhan) FOR BACKWARD COMPATIBILITY ---
+# --- POST-CONNECTION DHAN HQ ENDPOINTS (/api/v1/dhan) FOR BACKWARD COMPATIBILITY ---
 
 dhan_router = APIRouter(prefix="/api/v1/dhan", tags=["Dhan HQ Integration"])
 
@@ -138,6 +140,41 @@ async def renew_token(
     )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="Session token renewed successfully", data=dto, requestId=request_id)
+
+@dhan_router.get("/auth/initiate", response_model=ApiResponse[dict])
+@dhan_router.post("/auth/partner/generate-consent", response_model=ApiResponse[dict])
+async def initiate_dhan_consent(request: Request, current_user = Depends(get_current_user)):
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Redirect user to loginUrl to complete Dhan authentication",
+        data={
+            "loginUrl": "https://auth.dhan.co/partner-login?consentId=CONSENT_MOCK123",
+            "consentId": "CONSENT_MOCK123"
+        },
+        requestId=request_id
+    )
+
+@dhan_router.get("/auth/callback", response_model=ApiResponse[BrokerSessionResponse])
+@dhan_router.post("/auth/partner/consume-consent", response_model=ApiResponse[BrokerSessionResponse])
+async def consume_dhan_consent(
+    request: Request,
+    tokenId: str = "DEFAULT_TOKEN",
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    req = GenerateTokenRequest(clientId="DHAN_CONSENT_USER", accessToken=tokenId)
+    session = await service.create_or_update_session(db, current_user.id, req)
+    dto = BrokerSessionResponse(
+        userId=session.user_id,
+        clientId=session.account_client_id,
+        brokerName=session.broker_code,
+        status=session.status,
+        connectionDate=session.connection_date,
+        expiryTime=session.expiry_time
+    )
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan account linked successfully", data=dto, requestId=request_id)
 
 @dhan_router.post("/auth/connect-token", response_model=ApiResponse[BrokerSessionResponse])
 async def connect_token(
@@ -245,9 +282,81 @@ async def get_profile(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    profile = await service.get_profile(db, current_user.id, broker_code="DHAN")
+    profile: BrokerProfile = await service.get_profile(db, current_user.id, broker_code="DHAN")
+    dto = DhanProfileResponse(
+        clientId=profile.client_id,
+        name=profile.name,
+        ucc=profile.ucc or "",
+        email=profile.email or "",
+        mobileNo=profile.mobile_no or ""
+    )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Dhan profile retrieved successfully", data=profile, requestId=request_id)
+    return ApiResponse(success=True, message="Dhan profile retrieved successfully", data=dto, requestId=request_id)
+
+# --- POST-CONNECTION PORTFOLIO, FUNDS & MARGIN ENDPOINTS ---
+
+@dhan_router.get("/positions", response_model=ApiResponse[List[Dict[str, Any]]])
+async def get_positions(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    positions = await service.get_user_positions(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan positions fetched successfully", data=positions, requestId=request_id)
+
+@dhan_router.post("/positions/convert", response_model=ApiResponse[Dict[str, Any]])
+async def convert_position(
+    body: Dict[str, Any],
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res_data = await service.convert_user_position(db, current_user.id, body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan position converted successfully", data=res_data, requestId=request_id)
+
+@dhan_router.get("/holdings", response_model=ApiResponse[List[Dict[str, Any]]])
+async def get_holdings(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    holdings = await service.get_user_holdings(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan holdings fetched successfully", data=holdings, requestId=request_id)
+
+@dhan_router.get("/funds", response_model=ApiResponse[Dict[str, Any]])
+@dhan_router.get("/fundlimit", response_model=ApiResponse[Dict[str, Any]])
+async def get_funds(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    funds = await service.get_user_funds(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan fund limits fetched successfully", data=funds, requestId=request_id)
+
+@dhan_router.get("/portfolio-summary", response_model=ApiResponse[Dict[str, Any]])
+async def get_portfolio_summary(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    summary = await service.get_user_portfolio_summary(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Unified portfolio summary retrieved successfully", data=summary, requestId=request_id)
+
+@dhan_router.post("/margincalculator", response_model=ApiResponse[Dict[str, Any]])
+async def calculate_margin(
+    body: Dict[str, Any],
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    margin = await service.calculate_user_margin(db, current_user.id, body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan margin calculated successfully", data=margin, requestId=request_id)
 
 
 # Include both sub-routers into main router

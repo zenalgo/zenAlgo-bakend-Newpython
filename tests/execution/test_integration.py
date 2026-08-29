@@ -7,13 +7,15 @@ from app.users.models import User, UserRole
 from app.subscriptions.models import Subscription, Plan, PlanStrategyAccess
 from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyEntrySetting, StrategyEntryDay, StrategyExitSetting
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
-from app.brokers.models import BrokerAccount
+from app.brokers.models import BrokerAccount, UserDailyBrokerConnection
+from app.brokers.service import connect_broker, get_today_kolkata
 from app.execution.service import execute_signal_batch
 from app.auth.service import hash_password
 
 @pytest.mark.asyncio
 async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
     free_plan, premium_plan = seed_plans
+    today = get_today_kolkata()
 
     # 1. Setup 3 Users
     user1 = User(email="user1@example.com", password_hash=hash_password("pass"), role=UserRole.TRADER, is_active=True, referral_code="REF-USR001")
@@ -30,29 +32,18 @@ async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
     db_session.add_all([sub1, sub2, sub3])
     await db_session.flush()
 
-    # 3. Setup Broker Accounts (Generic BrokerAccount)
+    # 3. Setup Broker Accounts (Generic BrokerAccount + Daily Connections)
     # User 1: Active Valid Session
-    session1 = BrokerAccount(
-        user_id=user1.id,
-        broker_code="DHAN",
-        account_client_id="CLIENT1",
-        status="ACTIVE",
-        expiry_time=now + timedelta(hours=5)
-    )
-    session1.set_credentials({"clientId": "CLIENT1", "accessToken": "token1"})
+    session1 = await connect_broker(db_session, user1.id, "DHAN", {"clientId": "CLIENT1", "accessToken": "token1"}, target_date=today)
+    session1.expiry_time = now + timedelta(hours=5)
+    db_session.add(session1)
 
     # User 2: Expired Session
-    session2 = BrokerAccount(
-        user_id=user2.id,
-        broker_code="DHAN",
-        account_client_id="CLIENT2",
-        status="ACTIVE",
-        expiry_time=now - timedelta(minutes=1)
-    )
-    session2.set_credentials({"clientId": "CLIENT2", "accessToken": "token2"})
+    session2 = await connect_broker(db_session, user2.id, "DHAN", {"clientId": "CLIENT2", "accessToken": "token2"}, target_date=today)
+    session2.expiry_time = now - timedelta(minutes=1)
+    db_session.add(session2)
 
-    # User 3: Missing Session -> Not seeded in table
-    db_session.add_all([session1, session2])
+    # User 3: Missing Session -> Not connected
     await db_session.flush()
 
     # 4. Setup Strategy & Version Config
@@ -102,7 +93,7 @@ async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
         entry_time="09:30"
     )
     db_session.add(signal)
-    await db_session.commit() # commit all setup data
+    await db_session.commit()
 
     # 7. Run Batch Execution!
     await execute_signal_batch(signal.id)

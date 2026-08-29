@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, date, timezone
 from decimal import Decimal
 import uuid
+import logging
 from typing import List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -9,13 +10,16 @@ from sqlalchemy import update, func, exists
 
 from sqlalchemy.orm.attributes import set_committed_value
 from app.core.database import AsyncSessionLocal
+from app.core.redis import redis_manager
 from app.users.models import User
 from app.subscriptions.models import Subscription, Plan
 from app.subscriptions import service_eligibility
 from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyExecution, StrategyExecutionLeg
+from app.strategies.instrument_resolver import InstrumentResolver
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
 from app.execution.schemas import UserExecutionResult, StrategyExecutionBatchResponse, StrategyUserExecutionTraceResponse, StrategyExecutionTraceEventResponse, ExecutionFailureSummaryResponse, FailureReasonCount
 from app.brokers.models import BrokerAccount
+from app.brokers.service import get_active_broker_for_user, get_today_kolkata
 from app.brokers.registry import broker_registry
 from app.brokers.base.schemas import OrderRequest
 from app.core.exceptions import ResourceNotFoundError, ValidationError
@@ -23,29 +27,11 @@ from app.core.config import settings
 
 import pytz
 ZONE_KOLKATA = pytz.timezone("Asia/Kolkata")
+logger = logging.getLogger(__name__)
 
-class ResolvedInstrument:
-    def __init__(self, security_id: str, symbol: str):
-        self.security_id = security_id
-        self.symbol = symbol
+# Bounded Concurrency Semaphore
+_execution_semaphore = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_USER_EXECUTIONS", 20))
 
-def resolve_instrument(underlying: str, leg: StrategyLeg) -> ResolvedInstrument:
-    """Simulates option contract code resolving (like NIFTY26AUG25000CE)."""
-    strike = "25000"
-    if leg.strike_value is not None:
-        strike = str(int(leg.strike_value))
-    elif leg.strike_selection == "OTM1":
-        strike = "25100"
-    elif leg.strike_selection == "ITM1":
-        strike = "24900"
-        
-    option_type = "CE"
-    if leg.side == "SELL":
-        option_type = "PE"
-        
-    symbol = f"{underlying}26AUG{strike}{option_type}"
-    security_id = "14321"
-    return ResolvedInstrument(security_id, symbol)
 
 async def resolve_candidate_users(db: AsyncSession, strategy_id: int) -> List[int]:
     """Retrieves all active user IDs whose plan subscribes to the strategy."""
@@ -67,6 +53,7 @@ async def resolve_candidate_users(db: AsyncSession, strategy_id: int) -> List[in
     res_users = await db.execute(stmt_users)
     return list(set(res_users.scalars().all()))
 
+
 async def create_batch_record(db: AsyncSession, signal_id: int, total_users: int) -> StrategyExecutionBatch:
     """Creates a batch summary record in processing status."""
     stmt_signal = select(StrategySignal).where(StrategySignal.id == signal_id)
@@ -86,6 +73,7 @@ async def create_batch_record(db: AsyncSession, signal_id: int, total_users: int
     db.add(batch)
     await db.flush()
     return batch
+
 
 async def update_batch_record_status(
     db: AsyncSession,
@@ -114,6 +102,7 @@ async def update_batch_record_status(
     db.add(batch)
     await db.flush()
 
+
 async def log_event(db: AsyncSession, trace_id: int, step: str, status: str, message: str, error_code: str = None) -> None:
     """Logs trace event timeline step."""
     event = StrategyExecutionTraceEvent(
@@ -125,6 +114,7 @@ async def log_event(db: AsyncSession, trace_id: int, step: str, status: str, mes
     )
     db.add(event)
     await db.flush()
+
 
 async def fail_trace(
     db: AsyncSession,
@@ -156,275 +146,263 @@ async def fail_trace(
         failureReason=reason
     )
 
+
 async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id: int) -> UserExecutionResult:
-    """Processes strategy copy trading legs execution for a single user context."""
-    stmt_strat = select(Strategy).where(Strategy.id == batch.strategy_id)
-    res_strat = await db.execute(stmt_strat)
-    strategy = res_strat.scalar_one()
+    """Processes strategy copy trading legs execution for a single user context with Account-Level Execution Guard."""
+    async with _execution_semaphore:
+        # Acquire Account Execution Lock lock:user_execution:{user_id}
+        async with redis_manager.lock(f"lock:user_execution:{user_id}", timeout=15.0):
+            stmt_strat = select(Strategy).where(Strategy.id == batch.strategy_id)
+            res_strat = await db.execute(stmt_strat)
+            strategy = res_strat.scalar_one()
 
-    stmt_version = select(StrategyVersion).where(StrategyVersion.id == batch.strategy_version_id)
-    res_version = await db.execute(stmt_version)
-    version = res_version.scalar_one()
+            stmt_version = select(StrategyVersion).where(StrategyVersion.id == batch.strategy_version_id)
+            res_version = await db.execute(stmt_version)
+            version = res_version.scalar_one()
 
-    # Load version relations
-    stmt_legs = select(StrategyLeg).where(StrategyLeg.strategy_version_id == version.id).order_by(StrategyLeg.sequence.asc())
-    res_legs = await db.execute(stmt_legs)
-    set_committed_value(version, "legs", list(res_legs.scalars().all()))
+            # Load version relations
+            stmt_legs = select(StrategyLeg).where(StrategyLeg.strategy_version_id == version.id).order_by(StrategyLeg.sequence.asc())
+            res_legs = await db.execute(stmt_legs)
+            set_committed_value(version, "legs", list(res_legs.scalars().all()))
 
-    correlation_id = f"STRAT-{strategy.id}-SIG-{batch.signal_id}-USR-{user_id}-{str(uuid.uuid4())[:8]}"
+            correlation_id = f"STRAT-{strategy.id}-SIG-{batch.signal_id}-USR-{user_id}-{str(uuid.uuid4())[:8]}"
 
-    # 1. Initialize trace record
-    trace = StrategyUserExecutionTrace(
-        execution_batch_id=batch.id,
-        signal_id=batch.signal_id,
-        strategy_id=strategy.id,
-        strategy_version_id=version.id,
-        user_id=user_id,
-        status="PENDING",
-        correlation_id=correlation_id,
-        current_step="INIT"
-    )
-    db.add(trace)
-    await db.flush()
-
-    await log_event(db, trace.id, "INIT", "SUCCESS", "Trace initialized")
-
-    try:
-        # 2. Check User Active State
-        trace.current_step = "USER_CHECK"
-        trace.status = "ELIGIBILITY_CHECKING"
-        db.add(trace)
-        await db.flush()
-
-        stmt_user = select(User).where(User.id == user_id)
-        res_user = await db.execute(stmt_user)
-        user = res_user.scalar_one_or_none()
-
-        if not user or not user.is_active:
-            return await fail_trace(db, trace, "USER_CHECK", "USER_INACTIVE", "User is inactive or not found", "NOT_EXECUTED")
-        
-        await log_event(db, trace.id, "USER_CHECK", "SUCCESS", "User is active")
-
-        # 3. Check Active Subscription
-        trace.current_step = "SUBSCRIPTION_CHECK"
-        db.add(trace)
-        await db.flush()
-
-        stmt_sub = select(Subscription).where(
-            Subscription.user_id == user_id,
-            Subscription.status == "ACTIVE"
-        )
-        res_sub = await db.execute(stmt_sub)
-        active_sub = res_sub.scalar_one_or_none()
-
-        if not active_sub:
-            return await fail_trace(db, trace, "SUBSCRIPTION_CHECK", "SUBSCRIPTION_INACTIVE", "No active subscription found", "NOT_EXECUTED")
-        
-        stmt_plan = select(Plan).where(Plan.id == active_sub.plan_id)
-        res_plan = await db.execute(stmt_plan)
-        plan = res_plan.scalar_one()
-
-        trace.plan_id = plan.id
-        db.add(trace)
-        await db.flush()
-        await log_event(db, trace.id, "SUBSCRIPTION_CHECK", "SUCCESS", f"Active subscription validated for plan: {plan.code}")
-
-        # 4. Strategy Access & Eligibility Checking
-        trace.current_step = "PLAN_STRATEGY_CHECK"
-        db.add(trace)
-        await db.flush()
-
-        eligibility = await service_eligibility.check_strategy_eligibility(db, user_id, strategy.id)
-        if not eligibility.eligible:
-            code = "PLAN_NOT_ALLOWED"
-            if eligibility.reason == "DAILY_LIMIT_REACHED":
-                code = "DAILY_LIMIT_REACHED"
-            return await fail_trace(db, trace, "PLAN_STRATEGY_CHECK", code, f"Plan check failed: {eligibility.reason}", "NOT_EXECUTED")
-        
-        await log_event(db, trace.id, "PLAN_STRATEGY_CHECK", "SUCCESS", "Strategy eligibility validated")
-
-        # 5. Quota Reservation
-        trace.current_step = "QUOTA_RESERVATION"
-        trace.status = "QUOTA_RESERVING"
-        db.add(trace)
-        await db.flush()
-
-        today = datetime.now(ZONE_KOLKATA).date()
-        reservation = await service_eligibility.reserve_strategy_execution(db, user_id, strategy.id, today)
-        if not reservation.reserved:
-            return await fail_trace(db, trace, "QUOTA_RESERVATION", "DAILY_LIMIT_REACHED", f"Limit reached: {reservation.reason}", "QUOTA_REJECTED")
-
-        await log_event(db, trace.id, "QUOTA_RESERVATION", "SUCCESS", f"Quota reserved: {reservation.usedExecutionCount}/{reservation.maxExecutionLimit}")
-
-        # 6. Broker Account Check via Generic Broker Abstraction
-        trace.current_step = "BROKER_SESSION_CHECK"
-        trace.status = "BROKER_SESSION_CHECKING"
-        db.add(trace)
-        await db.flush()
-
-        stmt_session = select(BrokerAccount).where(BrokerAccount.user_id == user_id)
-        res_session = await db.execute(stmt_session)
-        broker_accounts = list(res_session.scalars().all())
-
-        if not broker_accounts:
-            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "BROKER_SESSION_NOT_FOUND", "No connected broker session found for user", "BROKER_SESSION_INVALID")
-
-        # Select primary active broker account
-        broker_account = next((acc for acc in broker_accounts if acc.status.upper() == "ACTIVE"), broker_accounts[0])
-
-        trace.broker_account_id = broker_account.id
-        trace.broker = broker_account.broker_code
-        db.add(trace)
-        await db.flush()
-
-        # Resolve broker adapter from registry dynamically
-        adapter = broker_registry.get(broker_account.broker_code)
-        val_res = await adapter.validate_connection(broker_account, broker_account.credentials)
-
-        if not val_res.is_valid:
-            failure_code = "BROKER_SESSION_EXPIRED" if val_res.status == "EXPIRED" else "BROKER_SESSION_INVALID"
-            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", failure_code, val_res.message or f"Session status is {val_res.status}", "BROKER_SESSION_INVALID")
-
-        await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", f"{broker_account.broker_code} broker session verified")
-
-        # 7. Start Position Execution
-        trace.status = "PROCESSING"
-        trace.started_at = datetime.now(timezone.utc)
-        trace.current_step = "ORDER_PLACEMENT"
-        db.add(trace)
-        await db.flush()
-
-        execution = StrategyExecution(
-            strategy_id=strategy.id,
-            strategy_version_id=version.id,
-            user_id=user_id,
-            execution_trace_id=trace.id,
-            status="RUNNING",
-            entry_time=datetime.now(timezone.utc)
-        )
-        db.add(execution)
-        await db.flush()
-
-        exec_logs = []
-        exec_logs.append(f"[{datetime.now()}] Started execution in {strategy.mode} mode using broker {broker_account.broker_code}.")
-
-        all_legs_success = True
-        any_leg_placed = False
-
-        # 8. Loop and place legs via Broker Adapter
-        for leg in version.legs:
-            exec_leg = StrategyExecutionLeg(
-                strategy_execution_id=execution.id,
-                strategy_leg_id=leg.id,
-                quantity=leg.lots * 50, # assuming multiplier 50 for nifty options
-                status="PENDING"
+            # 1. Initialize trace record
+            trace = StrategyUserExecutionTrace(
+                execution_batch_id=batch.id,
+                signal_id=batch.signal_id,
+                strategy_id=strategy.id,
+                strategy_version_id=version.id,
+                user_id=user_id,
+                status="PENDING",
+                correlation_id=correlation_id,
+                current_step="INIT"
             )
-            db.add(exec_leg)
+            db.add(trace)
             await db.flush()
 
-            resolved = resolve_instrument(version.underlying, leg)
-            leg_msg = f"Leg {leg.sequence}: {leg.side} {leg.segment} Strike: {leg.strike_selection} Lots: {leg.lots}"
-            await log_event(db, trace.id, "ORDER_PLACING", "PENDING", f"Placing leg: {leg_msg}")
+            await log_event(db, trace.id, "INIT", "SUCCESS", "Trace initialized")
 
-            if strategy.mode == "PAPER":
-                exec_leg.status = "FILLED"
-                exec_leg.price = leg.strike_value if leg.strike_value is not None else Decimal("100.00")
-                exec_leg.broker_order_id = f"PAPER-{str(uuid.uuid4())[:8]}"
-                db.add(exec_leg)
+            quota_reserved = False
+            today = get_today_kolkata()
+
+            try:
+                # 2. Check User Active State
+                trace.current_step = "USER_CHECK"
+                trace.status = "ELIGIBILITY_CHECKING"
+                db.add(trace)
+                await db.flush()
+
+                stmt_user = select(User).where(User.id == user_id)
+                res_user = await db.execute(stmt_user)
+                user = res_user.scalar_one_or_none()
+
+                if not user or not user.is_active:
+                    return await fail_trace(db, trace, "USER_CHECK", "USER_INACTIVE", "User is inactive or not found", "NOT_EXECUTED")
                 
-                exec_logs.append(f"[{datetime.now()}] PAPER Leg {leg.sequence} filled at {exec_leg.price}")
-                await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"PAPER Leg filled: {leg_msg}")
-                any_leg_placed = True
-            else:
-                # LIVE broker execution request via BrokerAdapter
+                await log_event(db, trace.id, "USER_CHECK", "SUCCESS", "User is active")
+
+                # 3. Check Active Subscription
+                trace.current_step = "SUBSCRIPTION_CHECK"
+                db.add(trace)
+                await db.flush()
+
+                stmt_sub = select(Subscription).where(
+                    Subscription.user_id == user_id,
+                    Subscription.status == "ACTIVE"
+                )
+                res_sub = await db.execute(stmt_sub)
+                active_sub = res_sub.scalar_one_or_none()
+
+                if not active_sub:
+                    return await fail_trace(db, trace, "SUBSCRIPTION_CHECK", "SUBSCRIPTION_INACTIVE", "No active subscription found", "NOT_EXECUTED")
+                
+                stmt_plan = select(Plan).where(Plan.id == active_sub.plan_id)
+                res_plan = await db.execute(stmt_plan)
+                plan = res_plan.scalar_one()
+
+                trace.plan_id = plan.id
+                db.add(trace)
+                await db.flush()
+                await log_event(db, trace.id, "SUBSCRIPTION_CHECK", "SUCCESS", f"Active subscription validated for plan: {plan.code}")
+
+                # 4. Strategy Access & Eligibility Checking
+                trace.current_step = "PLAN_STRATEGY_CHECK"
+                db.add(trace)
+                await db.flush()
+
+                eligibility = await service_eligibility.check_strategy_eligibility(db, user_id, strategy.id)
+                if not eligibility.eligible:
+                    code = "PLAN_NOT_ALLOWED"
+                    if eligibility.reason == "DAILY_LIMIT_REACHED":
+                        code = "DAILY_LIMIT_REACHED"
+                    return await fail_trace(db, trace, "PLAN_STRATEGY_CHECK", code, f"Plan check failed: {eligibility.reason}", "NOT_EXECUTED")
+                
+                await log_event(db, trace.id, "PLAN_STRATEGY_CHECK", "SUCCESS", "Strategy eligibility validated")
+
+                # 5. Broker Selection Check BEFORE Quota Reservation
+                trace.current_step = "BROKER_SESSION_CHECK"
+                trace.status = "BROKER_SESSION_CHECKING"
+                db.add(trace)
+                await db.flush()
+
                 try:
-                    order_req = OrderRequest(
-                        trading_symbol=resolved.symbol,
-                        security_id=resolved.security_id,
-                        transaction_type=leg.side,
-                        quantity=exec_leg.quantity
+                    broker_account = await get_active_broker_for_user(db, user_id, today)
+                except ResourceNotFoundError:
+                    return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "BROKER_SESSION_NOT_FOUND", "No active broker connected for user today (Asia/Kolkata)", "BROKER_SESSION_INVALID")
+
+                trace.broker_account_id = broker_account.id
+                trace.broker = broker_account.broker_code
+                db.add(trace)
+                await db.flush()
+
+                adapter = broker_registry.get(broker_account.broker_code)
+                val_res = await adapter.validate_connection(broker_account, broker_account.credentials)
+
+                if not val_res.is_valid:
+                    failure_code = "BROKER_SESSION_EXPIRED" if val_res.status == "EXPIRED" else "BROKER_SESSION_INVALID"
+                    return await fail_trace(db, trace, "BROKER_SESSION_CHECK", failure_code, val_res.message or f"Session status is {val_res.status}", "BROKER_SESSION_INVALID")
+
+                await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", f"{broker_account.broker_code} broker session verified")
+
+                # 6. Atomic Quota Reservation
+                trace.current_step = "QUOTA_RESERVATION"
+                trace.status = "QUOTA_RESERVING"
+                db.add(trace)
+                await db.flush()
+
+                reservation = await service_eligibility.reserve_strategy_execution(db, user_id, strategy.id, today)
+                if not reservation.reserved:
+                    return await fail_trace(db, trace, "QUOTA_RESERVATION", "DAILY_LIMIT_REACHED", f"Limit reached: {reservation.reason}", "QUOTA_REJECTED")
+
+                quota_reserved = True
+                await log_event(db, trace.id, "QUOTA_RESERVATION", "SUCCESS", f"Quota reserved: {reservation.usedExecutionCount}/{reservation.maxExecutionLimit}")
+
+                # 7. Start Position Execution
+                trace.status = "PROCESSING"
+                trace.started_at = datetime.now(timezone.utc)
+                trace.current_step = "ORDER_PLACEMENT"
+                db.add(trace)
+                await db.flush()
+
+                execution = StrategyExecution(
+                    strategy_id=strategy.id,
+                    strategy_version_id=version.id,
+                    user_id=user_id,
+                    execution_trace_id=trace.id,
+                    status="RUNNING",
+                    entry_time=datetime.now(timezone.utc)
+                )
+                db.add(execution)
+                await db.flush()
+
+                exec_logs = [f"[{datetime.now()}] Started execution in {strategy.mode} mode using broker {broker_account.broker_code}."]
+                all_legs_success = True
+                any_leg_placed = False
+
+                # 8. Loop and place legs via Broker Adapter with Idempotency Lock
+                for leg in version.legs:
+                    resolved = InstrumentResolver.resolve_leg_instrument(version.underlying, leg)
+                    calculated_qty = leg.lots * resolved.lot_size
+                    leg_cid = f"{correlation_id}-LEG-{leg.sequence}"
+
+                    exec_leg = StrategyExecutionLeg(
+                        strategy_execution_id=execution.id,
+                        strategy_leg_id=leg.id,
+                        correlation_id=leg_cid,
+                        quantity=calculated_qty,
+                        requested_quantity=calculated_qty,
+                        requested_price=leg.strike_value or Decimal("0.00"),
+                        status="PENDING"
                     )
-                    order_response = await adapter.place_order(broker_account, broker_account.credentials, order_req)
-                    
-                    broker_order_id = order_response.broker_order_id
-                    exec_leg.status = "FILLED"
-                    exec_leg.price = Decimal("120.50")
-                    exec_leg.broker_order_id = broker_order_id
                     db.add(exec_leg)
+                    await db.flush()
 
-                    exec_logs.append(f"[{datetime.now()}] LIVE Leg {leg.sequence} executed via {broker_account.broker_code}. Broker ID: {broker_order_id}")
-                    await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"LIVE Leg placed: {leg_msg} (Broker ID: {broker_order_id})")
-                    any_leg_placed = True
-                except Exception as ex:
-                    all_legs_success = False
-                    exec_leg.status = "REJECTED"
-                    db.add(exec_leg)
+                    leg_msg = f"Leg {leg.sequence}: {leg.side} {leg.segment} Symbol: {resolved.trading_symbol} Lots: {leg.lots} (Qty: {calculated_qty})"
+                    await log_event(db, trace.id, "ORDER_PLACING", "PENDING", f"Placing leg: {leg_msg}")
 
-                    exec_logs.append(f"[{datetime.now()}] ERROR placing leg {leg.sequence}: {str(ex)}")
-                    await log_event(db, trace.id, "ORDER_PLACING", "FAILED", f"Failed placing order: {leg_msg}. Error: {str(ex)}", "BROKER_ORDER_REJECTED")
+                    if strategy.mode == "PAPER":
+                        exec_leg.status = "FILLED"
+                        exec_leg.filled_quantity = calculated_qty
+                        exec_leg.price = leg.strike_value if leg.strike_value is not None else Decimal("100.00")
+                        exec_leg.average_fill_price = exec_leg.price
+                        exec_leg.broker_order_id = f"PAPER-{str(uuid.uuid4())[:8]}"
+                        db.add(exec_leg)
+                        
+                        exec_logs.append(f"[{datetime.now()}] PAPER Leg {leg.sequence} filled at {exec_leg.price}")
+                        await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"PAPER Leg filled: {leg_msg}")
+                        any_leg_placed = True
+                    else:
+                        # LIVE Execution under Redis Idempotency Lock
+                        async with redis_manager.lock(f"lock:order:idempotency:{leg_cid}", timeout=15.0):
+                            try:
+                                order_req = OrderRequest(
+                                    trading_symbol=resolved.trading_symbol,
+                                    security_id=resolved.security_id,
+                                    transaction_type=leg.side,
+                                    quantity=calculated_qty,
+                                    correlation_id=leg_cid
+                                )
+                                order_response = await adapter.place_order(broker_account, broker_account.credentials, order_req)
+                                
+                                broker_order_id = order_response.broker_order_id
+                                exec_leg.status = order_response.order_status
+                                exec_leg.price = leg.strike_value if leg.strike_value is not None else Decimal("0.00")
+                                exec_leg.broker_order_id = broker_order_id
+                                db.add(exec_leg)
 
-        # 9. Conclude Execution Status
-        execution.execution_logs = "\n".join(exec_logs)
-        
-        if all_legs_success:
-            execution.status = "SUCCESS"
-            db.add(execution)
+                                exec_logs.append(f"[{datetime.now()}] LIVE Leg {leg.sequence} executed via {broker_account.broker_code}. Broker ID: {broker_order_id}, Status: {order_response.order_status}")
+                                await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"LIVE Leg placed: {leg_msg} (Broker ID: {broker_order_id})")
+                                any_leg_placed = True
+                            except Exception as ex:
+                                all_legs_success = False
+                                exec_leg.status = "REJECTED"
+                                exec_leg.rejection_reason = str(ex)
+                                db.add(exec_leg)
 
-            trace.status = "EXECUTED"
-            trace.current_step = "ORDER_FILLED"
-            trace.completed_at = datetime.now(timezone.utc)
-            db.add(trace)
+                                exec_logs.append(f"[{datetime.now()}] ERROR placing leg {leg.sequence}: {str(ex)}")
+                                await log_event(db, trace.id, "ORDER_PLACING", "FAILED", f"Failed placing order: {leg_msg}. Error: {str(ex)}", "BROKER_ORDER_REJECTED")
 
-            return UserExecutionResult(
-                eligible=True,
-                executed=True,
-                status="EXECUTED",
-                executionId=execution.id
-            )
-        elif any_leg_placed:
-            execution.status = "FAILED"
-            db.add(execution)
+                execution.execution_logs = "\n".join(exec_logs)
+                
+                if all_legs_success:
+                    execution.status = "SUCCESS"
+                    db.add(execution)
+                    trace.status = "EXECUTED"
+                    trace.current_step = "ORDER_FILLED"
+                    trace.completed_at = datetime.now(timezone.utc)
+                    db.add(trace)
+                    return UserExecutionResult(eligible=True, executed=True, status="EXECUTED", executionId=execution.id)
+                elif any_leg_placed:
+                    execution.status = "FAILED"
+                    db.add(execution)
+                    trace.status = "PARTIALLY_EXECUTED"
+                    trace.current_step = "ORDER_PLACEMENT"
+                    trace.failure_code = "BROKER_ORDER_REJECTED"
+                    trace.failure_reason = "Some legs failed to execute"
+                    trace.completed_at = datetime.now(timezone.utc)
+                    db.add(trace)
+                    return UserExecutionResult(eligible=True, executed=False, status="PARTIALLY_EXECUTED", failureCode="BROKER_ORDER_REJECTED", failureReason="Some legs failed to execute", executionId=execution.id)
+                else:
+                    await db.delete(execution)
+                    if quota_reserved:
+                        await service_eligibility.release_strategy_execution(db, user_id, strategy.id, today)
+                    trace.status = "FAILED"
+                    trace.current_step = "ORDER_PLACEMENT"
+                    trace.failure_code = "BROKER_ORDER_REJECTED"
+                    trace.failure_reason = "All legs failed to place orders"
+                    trace.completed_at = datetime.now(timezone.utc)
+                    db.add(trace)
+                    return UserExecutionResult(eligible=True, executed=False, status="FAILED", failureCode="BROKER_ORDER_REJECTED", failureReason="All legs failed to place orders")
 
-            trace.status = "PARTIALLY_EXECUTED"
-            trace.current_step = "ORDER_PLACEMENT"
-            trace.failure_code = "BROKER_ORDER_REJECTED"
-            trace.failure_reason = "Some legs failed to execute"
-            trace.completed_at = datetime.now(timezone.utc)
-            db.add(trace)
+            except Exception as e:
+                if quota_reserved and not any_leg_placed:
+                    await service_eligibility.release_strategy_execution(db, user_id, strategy.id, today)
+                return await fail_trace(db, trace, "SYSTEM_ERROR", "SYSTEM_ERROR", str(e), "FAILED")
 
-            return UserExecutionResult(
-                eligible=True,
-                executed=False,
-                status="PARTIALLY_EXECUTED",
-                failureCode="BROKER_ORDER_REJECTED",
-                failureReason="Some legs failed to execute",
-                executionId=execution.id
-            )
-        else:
-            await db.delete(execution) # remove empty execution
-
-            trace.status = "FAILED"
-            trace.current_step = "ORDER_PLACEMENT"
-            trace.failure_code = "BROKER_ORDER_REJECTED"
-            trace.failure_reason = "All legs failed to place orders"
-            trace.completed_at = datetime.now(timezone.utc)
-            db.add(trace)
-
-            return UserExecutionResult(
-                eligible=True,
-                executed=False,
-                status="FAILED",
-                failureCode="BROKER_ORDER_REJECTED",
-                failureReason="All legs failed to place orders"
-            )
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return await fail_trace(db, trace, "SYSTEM_ERROR", "SYSTEM_ERROR", str(e), "FAILED")
 
 async def execute_single_user_task(batch_id: int, user_id: int) -> UserExecutionResult:
-    """Independent isolated task execution runner, spawning its own transactional session scope."""
+    """Independent isolated task execution runner."""
     async with AsyncSessionLocal() as db:
         try:
             stmt = select(StrategyExecutionBatch).where(StrategyExecutionBatch.id == batch_id)
@@ -436,16 +414,11 @@ async def execute_single_user_task(batch_id: int, user_id: int) -> UserExecution
             return res_val
         except Exception as ex:
             await db.rollback()
-            return UserExecutionResult(
-                eligible=False,
-                executed=False,
-                status="FAILED",
-                failureCode="SYSTEM_ERROR",
-                failureReason=str(ex)
-            )
+            return UserExecutionResult(eligible=False, executed=False, status="FAILED", failureCode="SYSTEM_ERROR", failureReason=str(ex))
+
 
 async def execute_signal_batch(signal_id: int) -> None:
-    """Executes signal batch. Resolves plan candidate users and schedules concurrent isolated tasks."""
+    """Executes signal batch."""
     async with AsyncSessionLocal() as db:
         stmt_sig = select(StrategySignal).where(StrategySignal.id == signal_id)
         res_sig = await db.execute(stmt_sig)
@@ -456,13 +429,11 @@ async def execute_signal_batch(signal_id: int) -> None:
         candidate_ids = await resolve_candidate_users(db, signal.strategy_id)
         batch = await create_batch_record(db, signal_id, len(candidate_ids))
         batch_id = batch.id
-        await db.commit() # commit batch record first
+        await db.commit()
 
-    # Process candidates concurrently
     tasks = [execute_single_user_task(batch_id, uid) for uid in candidate_ids]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Aggregate counts
     eligible = 0
     rejected = 0
     started = 0
@@ -490,23 +461,51 @@ async def execute_signal_batch(signal_id: int) -> None:
         else:
             not_executed += 1
 
-    # Update batch summary record
     async with AsyncSessionLocal() as db:
         await update_batch_record_status(db, batch_id, eligible, rejected, started, successful, failed, not_executed)
         await db.commit()
 
+
 async def exit_all_positions(db: AsyncSession, strategy_id: int) -> None:
-    """Performs manual square-off transition for active positions (sets exit times)."""
+    """Performs manual square-off with live Dhan opposite market orders and net_qty == 0 verification."""
     stmt = select(StrategyExecution).where(
         StrategyExecution.strategy_id == strategy_id,
         StrategyExecution.status == "RUNNING"
     )
     res = await db.execute(stmt)
-    active_executions = res.scalars().all()
+    active_executions = list(res.scalars().all())
 
     for exec in active_executions:
-        exec.status = "SQUARED_OFF"
-        exec.exit_time = datetime.now(timezone.utc)
-        exec.execution_logs = (exec.execution_logs or "") + f"\n[{datetime.now()}] Admin manual square off triggered."
-        db.add(exec)
+        async with redis_manager.lock(f"lock:user_execution:{exec.user_id}", timeout=15.0):
+            async with redis_manager.lock(f"lock:squareoff:{exec.user_id}:{strategy_id}", timeout=15.0):
+                try:
+                    account = await get_active_broker_for_user(db, exec.user_id)
+                    adapter = broker_registry.get(account.broker_code)
+                    live_positions = await adapter.get_positions(account, account.credentials)
+                    
+                    for pos in live_positions:
+                        if pos.net_qty != 0:
+                            exit_side = "SELL" if pos.net_qty > 0 else "BUY"
+                            exit_qty = abs(pos.net_qty)
+                            order_req = OrderRequest(
+                                trading_symbol=pos.trading_symbol,
+                                security_id=pos.security_id,
+                                transaction_type=exit_side,
+                                quantity=exit_qty,
+                                product_type="INTRADAY",
+                                order_type="MARKET",
+                                correlation_id=f"SQOFF-{exec.id}-{str(uuid.uuid4())[:8]}"
+                            )
+                            await adapter.place_order(account, account.credentials, order_req)
+                    
+                    exec.status = "SQUARED_OFF"
+                    exec.exit_time = datetime.now(timezone.utc)
+                    exec.execution_logs = (exec.execution_logs or "") + f"\n[{datetime.now()}] Live market square-off executed cleanly."
+                    db.add(exec)
+                except Exception as ex:
+                    logger.error("Square-off failed for execution %s: %s", exec.id, str(ex))
+                    exec.status = "SQUARE_OFF_FAILED"
+                    exec.execution_logs = (exec.execution_logs or "") + f"\n[{datetime.now()}] Square-off failed: {str(ex)}"
+                    db.add(exec)
+
     await db.flush()

@@ -82,3 +82,20 @@ class BrokerAdapter(ABC):
     async def get_funds(self, account: Any, credentials: Dict[str, Any]) -> Funds:
         """Retrieves fund / margin limit details."""
         pass
+
+    # Optional Extended Operations
+    async def calculate_margin(self, account: Any, credentials: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculates margin requirement for order contract."""
+        return {"status": "SUCCESS", "totalMarginRequired": 0.0}
+
+    async def convert_position(self, account: Any, credentials: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts position product type."""
+        return {"status": "SUCCESS", "message": "Position converted"}
+
+    async def get_trades(self, account: Any, credentials: Dict[str, Any], order_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieves trade execution history."""
+        return []
+
+    async def get_forever_orders(self, account: Any, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Retrieves GTT forever orders."""
+        return []

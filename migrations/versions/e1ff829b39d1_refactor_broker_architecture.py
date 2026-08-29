@@ -73,15 +73,27 @@ def upgrade() -> None:
             )
         op.drop_table('dhan_broker_sessions')
 
-    # 3. Rename dhan_client_id in user_fund_snapshots if column exists
-    if 'user_fund_snapshots' in tables:
-        cols = [c['name'] for c in inspector.get_columns('user_fund_snapshots')]
-        if 'dhan_client_id' in cols:
-            with op.batch_alter_table('user_fund_snapshots') as batch_op:
-                batch_op.alter_column('dhan_client_id', new_column_name='account_client_id', existing_type=sa.String(length=50))
-        elif 'account_client_id' not in cols:
-            op.add_column('user_fund_snapshots', sa.Column('account_client_id', sa.String(length=100), nullable=True))
+    # 4. Create user_daily_broker_connections table
+    if 'user_daily_broker_connections' not in tables:
+        op.create_table(
+            'user_daily_broker_connections',
+            sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+            sa.Column('user_id', sa.BigInteger(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('connection_date', sa.Date(), nullable=False),
+            sa.Column('broker_account_id', sa.BigInteger(), sa.ForeignKey('broker_accounts.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('broker_code', sa.String(length=50), nullable=False),
+            sa.Column('status', sa.String(length=50), server_default='ACTIVE', nullable=False),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('user_id', 'connection_date', name='uk_user_daily_broker_date')
+        )
+        op.create_index(op.f('ix_user_daily_broker_connections_user_id'), 'user_daily_broker_connections', ['user_id'], unique=False)
+        op.create_index(op.f('ix_user_daily_broker_connections_connection_date'), 'user_daily_broker_connections', ['connection_date'], unique=False)
+        op.create_index(op.f('ix_user_daily_broker_connections_broker_account_id'), 'user_daily_broker_connections', ['broker_account_id'], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_table('user_daily_broker_connections', if_exists=True)
     op.drop_table('broker_accounts', if_exists=True)
+

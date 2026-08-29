@@ -5,7 +5,7 @@ from app.core.database import Base
 from app.core.security import encrypt_credentials, decrypt_credentials
 
 class BrokerAccount(Base):
-    """Generic broker account/session entity supporting any registered broker."""
+    """Generic broker account entity supporting any registered broker."""
 
     __tablename__ = "broker_accounts"
 
@@ -67,6 +67,29 @@ class BrokerAccount(Base):
     @broker_name.setter
     def broker_name(self, val: str):
         self.broker_code = val
+
+
+class UserDailyBrokerConnection(Base):
+    """Tracks daily active broker selection per user for business date (Asia/Kolkata).
+    Enforces EXACTLY ONE BROKER PER USER PER CALENDAR DAY at database level.
+    """
+    __tablename__ = "user_daily_broker_connections"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    connection_date = Column(Date, nullable=False, index=True)  # Calendar date in Asia/Kolkata
+    broker_account_id = Column(BigInteger, ForeignKey("broker_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_code = Column(String(50), nullable=False)
+    status = Column(String(50), nullable=False, default="ACTIVE")  # ACTIVE, DISCONNECTED
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "connection_date", name="uk_user_daily_broker_date"),
+    )
+
+    user = relationship("User")
+    broker_account = relationship("BrokerAccount")
 
 
 # Alias DhanBrokerSession to BrokerAccount for legacy queries/imports
@@ -136,8 +159,8 @@ class UserOrder(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     broker_name = Column(String(50), nullable=False, default="DHAN")
-    broker_order_id = Column(String(100), nullable=False)
-    correlation_id = Column(String(100), nullable=True)
+    broker_order_id = Column(String(100), nullable=True, index=True)
+    correlation_id = Column(String(100), nullable=True, unique=True, index=True)
     trading_symbol = Column(String(100), nullable=True)
     security_id = Column(String(50), nullable=True)
     exchange_segment = Column(String(50), nullable=True)
@@ -145,11 +168,19 @@ class UserOrder(Base):
     order_type = Column(String(50), nullable=False)
     product_type = Column(String(50), nullable=False)
     quantity = Column(Integer, nullable=False)
+    requested_quantity = Column(Integer, nullable=True)
+    filled_quantity = Column(Integer, default=0)
+    remaining_quantity = Column(Integer, default=0)
     disclosed_quantity = Column(Integer, default=0)
     price = Column(Numeric(15, 2), default=0.00)
+    requested_price = Column(Numeric(15, 2), default=0.00)
+    average_fill_price = Column(Numeric(15, 2), default=0.00)
     trigger_price = Column(Numeric(15, 2), default=0.00)
     order_status = Column(String(50), nullable=False, default="PENDING", index=True)
     rejection_reason = Column(Text, nullable=True)
+    reconciliation_attempts = Column(Integer, default=0)
+    last_reconciled_at = Column(DateTime(timezone=True), nullable=True)
+    square_off_order_id = Column(String(100), nullable=True)
     order_timestamp = Column(DateTime(timezone=True), nullable=True)
     synced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
