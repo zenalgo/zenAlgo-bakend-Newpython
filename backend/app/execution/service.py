@@ -1,0 +1,509 @@
+import asyncio
+from datetime import datetime, date, timezone
+from decimal import Decimal
+import uuid
+from typing import List, Optional, Tuple
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy import update, func, exists
+
+from sqlalchemy.orm.attributes import set_committed_value
+from app.core.database import AsyncSessionLocal
+from app.users.models import User
+from app.subscriptions.models import Subscription, Plan
+from app.subscriptions import service_eligibility
+from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyExecution, StrategyExecutionLeg
+from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
+from app.execution.schemas import UserExecutionResult, StrategyExecutionBatchResponse, StrategyUserExecutionTraceResponse, StrategyExecutionTraceEventResponse, ExecutionFailureSummaryResponse, FailureReasonCount
+from app.brokers.models import DhanBrokerSession
+from app.core.exceptions import ResourceNotFoundError, ValidationError
+from app.core.config import settings
+
+import pytz
+ZONE_KOLKATA = pytz.timezone("Asia/Kolkata")
+
+class ResolvedInstrument:
+    def __init__(self, security_id: str, symbol: str):
+        self.security_id = security_id
+        self.symbol = symbol
+
+def resolve_instrument(underlying: str, leg: StrategyLeg) -> ResolvedInstrument:
+    """Simulates option contract code resolving (like NIFTY26AUG25000CE)."""
+    strike = "25000"
+    if leg.strike_value is not None:
+        strike = str(int(leg.strike_value))
+    elif leg.strike_selection == "OTM1":
+        strike = "25100"
+    elif leg.strike_selection == "ITM1":
+        strike = "24900"
+        
+    option_type = "CE"
+    if leg.side == "SELL":
+        option_type = "PE"
+        
+    symbol = f"{underlying}26AUG{strike}{option_type}"
+    security_id = "14321"
+    return ResolvedInstrument(security_id, symbol)
+
+async def resolve_candidate_users(db: AsyncSession, strategy_id: int) -> List[int]:
+    """Retrieves all active user IDs whose plan subscribes to the strategy."""
+    from app.subscriptions.models import PlanStrategyAccess
+    stmt_plans = select(PlanStrategyAccess.plan_id).where(
+        PlanStrategyAccess.strategy_id == strategy_id,
+        PlanStrategyAccess.is_enabled == True
+    )
+    res_plans = await db.execute(stmt_plans)
+    plan_ids = list(res_plans.scalars().all())
+    
+    if not plan_ids:
+        return []
+
+    stmt_users = select(Subscription.user_id).where(
+        Subscription.plan_id.in_(plan_ids),
+        Subscription.status == "ACTIVE"
+    )
+    res_users = await db.execute(stmt_users)
+    return list(set(res_users.scalars().all()))
+
+async def create_batch_record(db: AsyncSession, signal_id: int, total_users: int) -> StrategyExecutionBatch:
+    """Creates a batch summary record in processing status."""
+    stmt_signal = select(StrategySignal).where(StrategySignal.id == signal_id)
+    res_signal = await db.execute(stmt_signal)
+    signal = res_signal.scalar_one_or_none()
+    if not signal:
+        raise ResourceNotFoundError(f"Signal not found with id: {signal_id}")
+
+    batch = StrategyExecutionBatch(
+        signal_id=signal_id,
+        strategy_id=signal.strategy_id,
+        strategy_version_id=signal.strategy_version_id,
+        trading_date=signal.trading_date,
+        total_users=total_users,
+        status="PROCESSING"
+    )
+    db.add(batch)
+    await db.flush()
+    return batch
+
+async def update_batch_record_status(
+    db: AsyncSession,
+    batch_id: int,
+    eligible: int,
+    rejected: int,
+    started: int,
+    successful: int,
+    failed: int,
+    not_executed: int
+) -> None:
+    """Summarizes and updates batch execution status counts."""
+    stmt = select(StrategyExecutionBatch).where(StrategyExecutionBatch.id == batch_id)
+    res = await db.execute(stmt)
+    batch = res.scalar_one()
+
+    batch.eligible_users = eligible
+    batch.rejected_users = rejected
+    batch.execution_started_users = started
+    batch.successful_users = successful
+    batch.failed_users = failed
+    batch.not_executed_users = not_executed
+    batch.status = "COMPLETED_WITH_ERRORS" if failed > 0 else "COMPLETED"
+    batch.completed_at = datetime.now(timezone.utc)
+    
+    db.add(batch)
+    await db.flush()
+
+async def log_event(db: AsyncSession, trace_id: int, step: str, status: str, message: str, error_code: str = None) -> None:
+    """Logs trace event timeline step."""
+    event = StrategyExecutionTraceEvent(
+        execution_trace_id=trace_id,
+        step=step,
+        status=status,
+        message=message,
+        error_code=error_code
+    )
+    db.add(event)
+    await db.flush()
+
+async def fail_trace(
+    db: AsyncSession,
+    trace: StrategyUserExecutionTrace,
+    step: str,
+    failure_code: str,
+    reason: str,
+    final_status: str
+) -> UserExecutionResult:
+    """Marks trace status as failed or rejected and returns execution error result."""
+    trace.status = final_status
+    trace.current_step = step
+    trace.failure_code = failure_code
+    trace.failure_reason = reason
+    trace.completed_at = datetime.now(timezone.utc)
+    
+    db.add(trace)
+    await db.flush()
+
+    await log_event(db, trace.id, step, "FAILED", reason, failure_code)
+    await log_event(db, trace.id, "EXECUTION_COMPLETE", "FAILED", f"Execution terminated with status: {final_status}", failure_code)
+
+    is_eligible = final_status in ["FAILED", "UNKNOWN"]
+    return UserExecutionResult(
+        eligible=is_eligible,
+        executed=False,
+        status=final_status,
+        failureCode=failure_code,
+        failureReason=reason
+    )
+
+async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id: int) -> UserExecutionResult:
+    """Processes strategy copy trading legs execution for a single user context."""
+    stmt_strat = select(Strategy).where(Strategy.id == batch.strategy_id)
+    res_strat = await db.execute(stmt_strat)
+    strategy = res_strat.scalar_one()
+
+    stmt_version = select(StrategyVersion).where(StrategyVersion.id == batch.strategy_version_id)
+    res_version = await db.execute(stmt_version)
+    version = res_version.scalar_one()
+
+    # Load version relations
+    stmt_legs = select(StrategyLeg).where(StrategyLeg.strategy_version_id == version.id).order_by(StrategyLeg.sequence.asc())
+    res_legs = await db.execute(stmt_legs)
+    set_committed_value(version, "legs", list(res_legs.scalars().all()))
+
+    correlation_id = f"STRAT-{strategy.id}-SIG-{batch.signal_id}-USR-{user_id}-{str(uuid.uuid4())[:8]}"
+
+    # 1. Initialize trace record
+    trace = StrategyUserExecutionTrace(
+        execution_batch_id=batch.id,
+        signal_id=batch.signal_id,
+        strategy_id=strategy.id,
+        strategy_version_id=version.id,
+        user_id=user_id,
+        status="PENDING",
+        correlation_id=correlation_id,
+        current_step="INIT"
+    )
+    db.add(trace)
+    await db.flush()
+
+    await log_event(db, trace.id, "INIT", "SUCCESS", "Trace initialized")
+
+    try:
+        # 2. Check User Active State
+        trace.current_step = "USER_CHECK"
+        trace.status = "ELIGIBILITY_CHECKING"
+        db.add(trace)
+        await db.flush()
+
+        stmt_user = select(User).where(User.id == user_id)
+        res_user = await db.execute(stmt_user)
+        user = res_user.scalar_one_or_none()
+
+        if not user or not user.is_active:
+            return await fail_trace(db, trace, "USER_CHECK", "USER_INACTIVE", "User is inactive or not found", "NOT_EXECUTED")
+        
+        await log_event(db, trace.id, "USER_CHECK", "SUCCESS", "User is active")
+
+        # 3. Check Active Subscription
+        trace.current_step = "SUBSCRIPTION_CHECK"
+        db.add(trace)
+        await db.flush()
+
+        stmt_sub = select(Subscription).where(
+            Subscription.user_id == user_id,
+            Subscription.status == "ACTIVE"
+        )
+        res_sub = await db.execute(stmt_sub)
+        active_sub = res_sub.scalar_one_or_none()
+
+        if not active_sub:
+            return await fail_trace(db, trace, "SUBSCRIPTION_CHECK", "SUBSCRIPTION_INACTIVE", "No active subscription found", "NOT_EXECUTED")
+        
+        stmt_plan = select(Plan).where(Plan.id == active_sub.plan_id)
+        res_plan = await db.execute(stmt_plan)
+        plan = res_plan.scalar_one()
+
+        trace.plan_id = plan.id
+        db.add(trace)
+        await db.flush()
+        await log_event(db, trace.id, "SUBSCRIPTION_CHECK", "SUCCESS", f"Active subscription validated for plan: {plan.code}")
+
+        # 4. Strategy Access & Eligibility Checking
+        trace.current_step = "PLAN_STRATEGY_CHECK"
+        db.add(trace)
+        await db.flush()
+
+        eligibility = await service_eligibility.check_strategy_eligibility(db, user_id, strategy.id)
+        if not eligibility.eligible:
+            code = "PLAN_NOT_ALLOWED"
+            if eligibility.reason == "DAILY_LIMIT_REACHED":
+                code = "DAILY_LIMIT_REACHED"
+            return await fail_trace(db, trace, "PLAN_STRATEGY_CHECK", code, f"Plan check failed: {eligibility.reason}", "NOT_EXECUTED")
+        
+        await log_event(db, trace.id, "PLAN_STRATEGY_CHECK", "SUCCESS", "Strategy eligibility validated")
+
+        # 5. Quota Reservation
+        trace.current_step = "QUOTA_RESERVATION"
+        trace.status = "QUOTA_RESERVING"
+        db.add(trace)
+        await db.flush()
+
+        today = datetime.now(ZONE_KOLKATA).date()
+        reservation = await service_eligibility.reserve_strategy_execution(db, user_id, strategy.id, today)
+        if not reservation.reserved:
+            return await fail_trace(db, trace, "QUOTA_RESERVATION", "DAILY_LIMIT_REACHED", f"Limit reached: {reservation.reason}", "QUOTA_REJECTED")
+
+        await log_event(db, trace.id, "QUOTA_RESERVATION", "SUCCESS", f"Quota reserved: {reservation.usedExecutionCount}/{reservation.maxExecutionLimit}")
+
+        # 6. Broker Session Check
+        trace.current_step = "BROKER_SESSION_CHECK"
+        trace.status = "BROKER_SESSION_CHECKING"
+        db.add(trace)
+        await db.flush()
+
+        stmt_session = select(DhanBrokerSession).where(DhanBrokerSession.user_id == user_id)
+        res_session = await db.execute(stmt_session)
+        dhan_session = res_session.scalar_one_or_none()
+
+        if not dhan_session:
+            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_NOT_FOUND", "No connected Dhan session found for user", "BROKER_SESSION_INVALID")
+
+        trace.broker_account_id = dhan_session.id
+        trace.broker = dhan_session.broker_name
+        db.add(trace)
+        await db.flush()
+
+        if dhan_session.status.upper() != "ACTIVE":
+            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_INVALID", f"Session status is: {dhan_session.status}", "BROKER_SESSION_INVALID")
+
+        if dhan_session.expiry_time and dhan_session.expiry_time.astimezone(timezone.utc) < datetime.now(timezone.utc):
+            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_EXPIRED", f"Session expired at {dhan_session.expiry_time}", "BROKER_SESSION_INVALID")
+
+        await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", "Dhan session verified")
+
+        # 7. Start Position Execution
+        trace.status = "PROCESSING"
+        trace.started_at = datetime.now(timezone.utc)
+        trace.current_step = "ORDER_PLACEMENT"
+        db.add(trace)
+        await db.flush()
+
+        execution = StrategyExecution(
+            strategy_id=strategy.id,
+            strategy_version_id=version.id,
+            user_id=user_id,
+            execution_trace_id=trace.id,
+            status="RUNNING",
+            entry_time=datetime.now(timezone.utc)
+        )
+        db.add(execution)
+        await db.flush()
+
+        exec_logs = []
+        exec_logs.append(f"[{datetime.now()}] Started execution in {strategy.mode} mode.")
+
+        all_legs_success = True
+        any_leg_placed = False
+
+        # 8. Loop and place legs
+        for leg in version.legs:
+            exec_leg = StrategyExecutionLeg(
+                strategy_execution_id=execution.id,
+                strategy_leg_id=leg.id,
+                quantity=leg.lots * 50, # assuming multiplier 50 for nifty options
+                status="PENDING"
+            )
+            db.add(exec_leg)
+            await db.flush()
+
+            resolved = resolve_instrument(version.underlying, leg)
+            leg_msg = f"Leg {leg.sequence}: {leg.side} {leg.segment} Strike: {leg.strike_selection} Lots: {leg.lots}"
+            await log_event(db, trace.id, "ORDER_PLACING", "PENDING", f"Placing leg: {leg_msg}")
+
+            if strategy.mode == "PAPER":
+                exec_leg.status = "FILLED"
+                exec_leg.price = leg.strike_value if leg.strike_value is not None else Decimal("100.00")
+                exec_leg.broker_order_id = f"PAPER-{str(uuid.uuid4())[:8]}"
+                db.add(exec_leg)
+                
+                exec_logs.append(f"[{datetime.now()}] PAPER Leg {leg.sequence} filled at {exec_leg.price}")
+                await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"PAPER Leg filled: {leg_msg}")
+                any_leg_placed = True
+            else:
+                # LIVE Dhan execution request simulation
+                try:
+                    from app.brokers import service as broker_service
+                    # place order via httpx client calling Dhan HQ
+                    order_response = await broker_service.place_dhan_order(
+                        email=user.email,
+                        token=dhan_session.access_token,
+                        client_id=dhan_session.dhan_client_id,
+                        trading_symbol=resolved.symbol,
+                        security_id=resolved.security_id,
+                        transaction_type=leg.side,
+                        quantity=exec_leg.quantity
+                    )
+                    
+                    broker_order_id = order_response.get("orderId", f"DHAN-{str(uuid.uuid4())[:8]}")
+                    exec_leg.status = "FILLED"
+                    exec_leg.price = Decimal("120.50")
+                    exec_leg.broker_order_id = broker_order_id
+                    db.add(exec_leg)
+
+                    exec_logs.append(f"[{datetime.now()}] LIVE Leg {leg.sequence} executed. Broker ID: {broker_order_id}")
+                    await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"LIVE Leg placed: {leg_msg} (Broker ID: {broker_order_id})")
+                    any_leg_placed = True
+                except Exception as ex:
+                    all_legs_success = False
+                    exec_leg.status = "REJECTED"
+                    db.add(exec_leg)
+
+                    exec_logs.append(f"[{datetime.now()}] ERROR placing leg {leg.sequence}: {str(ex)}")
+                    await log_event(db, trace.id, "ORDER_PLACING", "FAILED", f"Failed placing order: {leg_msg}. Error: {str(ex)}", "DHAN_ORDER_REJECTED")
+
+        # 9. Conclude Execution Status
+        execution.execution_logs = "\n".join(exec_logs)
+        
+        if all_legs_success:
+            execution.status = "SUCCESS"
+            db.add(execution)
+
+            trace.status = "EXECUTED"
+            trace.current_step = "ORDER_FILLED"
+            trace.completed_at = datetime.now(timezone.utc)
+            db.add(trace)
+
+            return UserExecutionResult(
+                eligible=True,
+                executed=True,
+                status="EXECUTED",
+                executionId=execution.id
+            )
+        elif any_leg_placed:
+            execution.status = "FAILED"
+            db.add(execution)
+
+            trace.status = "PARTIALLY_EXECUTED"
+            trace.current_step = "ORDER_PLACEMENT"
+            trace.failure_code = "DHAN_ORDER_REJECTED"
+            trace.failure_reason = "Some legs failed to execute"
+            trace.completed_at = datetime.now(timezone.utc)
+            db.add(trace)
+
+            return UserExecutionResult(
+                eligible=True,
+                executed=False,
+                status="PARTIALLY_EXECUTED",
+                failureCode="DHAN_ORDER_REJECTED",
+                failureReason="Some legs failed to execute",
+                executionId=execution.id
+            )
+        else:
+            await db.delete(execution) # remove empty execution
+
+            trace.status = "FAILED"
+            trace.current_step = "ORDER_PLACEMENT"
+            trace.failure_code = "DHAN_ORDER_REJECTED"
+            trace.failure_reason = "All legs failed to place orders"
+            trace.completed_at = datetime.now(timezone.utc)
+            db.add(trace)
+
+            return UserExecutionResult(
+                eligible=True,
+                executed=False,
+                status="FAILED",
+                failureCode="DHAN_ORDER_REJECTED",
+                failureReason="All legs failed to place orders"
+            )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return await fail_trace(db, trace, "SYSTEM_ERROR", "SYSTEM_ERROR", str(e), "FAILED")
+
+async def execute_single_user_task(batch_id: int, user_id: int) -> UserExecutionResult:
+    """Independent isolated task execution runner, spawning its own transactional session scope."""
+    async with AsyncSessionLocal() as db:
+        try:
+            stmt = select(StrategyExecutionBatch).where(StrategyExecutionBatch.id == batch_id)
+            res = await db.execute(stmt)
+            batch = res.scalar_one()
+
+            res_val = await process_user(db, batch, user_id)
+            await db.commit()
+            return res_val
+        except Exception as ex:
+            await db.rollback()
+            return UserExecutionResult(
+                eligible=False,
+                executed=False,
+                status="FAILED",
+                failureCode="SYSTEM_ERROR",
+                failureReason=str(ex)
+            )
+
+async def execute_signal_batch(signal_id: int) -> None:
+    """Executes signal batch. Resolves plan candidate users and schedules concurrent isolated tasks."""
+    async with AsyncSessionLocal() as db:
+        stmt_sig = select(StrategySignal).where(StrategySignal.id == signal_id)
+        res_sig = await db.execute(stmt_sig)
+        signal = res_sig.scalar_one_or_none()
+        if not signal:
+            raise ResourceNotFoundError(f"Signal not found with id: {signal_id}")
+
+        candidate_ids = await resolve_candidate_users(db, signal.strategy_id)
+        batch = await create_batch_record(db, signal_id, len(candidate_ids))
+        batch_id = batch.id
+        await db.commit() # commit batch record first
+
+    # Process candidates concurrently
+    tasks = [execute_single_user_task(batch_id, uid) for uid in candidate_ids]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Aggregate counts
+    eligible = 0
+    rejected = 0
+    started = 0
+    successful = 0
+    failed = 0
+    not_executed = 0
+
+    for res in results:
+        if isinstance(res, Exception):
+            failed += 1
+            started += 1
+            continue
+
+        if res.eligible:
+            eligible += 1
+        else:
+            rejected += 1
+
+        if res.status == "EXECUTED":
+            successful += 1
+            started += 1
+        elif res.status in ["PARTIALLY_EXECUTED", "FAILED"]:
+            failed += 1
+            started += 1
+        else:
+            not_executed += 1
+
+    # Update batch summary record
+    async with AsyncSessionLocal() as db:
+        await update_batch_record_status(db, batch_id, eligible, rejected, started, successful, failed, not_executed)
+        await db.commit()
+
+async def exit_all_positions(db: AsyncSession, strategy_id: int) -> None:
+    """Performs manual square-off transition for active positions (sets exit times)."""
+    stmt = select(StrategyExecution).where(
+        StrategyExecution.strategy_id == strategy_id,
+        StrategyExecution.status == "RUNNING"
+    )
+    res = await db.execute(stmt)
+    active_executions = res.scalars().all()
+
+    for exec in active_executions:
+        exec.status = "SQUARED_OFF"
+        exec.exit_time = datetime.now(timezone.utc)
+        exec.execution_logs = (exec.execution_logs or "") + f"\n[{datetime.now()}] Admin manual square off triggered."
+        db.add(exec)
+    await db.flush()
