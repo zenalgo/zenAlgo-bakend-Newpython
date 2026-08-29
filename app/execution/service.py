@@ -15,7 +15,9 @@ from app.subscriptions import service_eligibility
 from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyExecution, StrategyExecutionLeg
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
 from app.execution.schemas import UserExecutionResult, StrategyExecutionBatchResponse, StrategyUserExecutionTraceResponse, StrategyExecutionTraceEventResponse, ExecutionFailureSummaryResponse, FailureReasonCount
-from app.brokers.models import DhanBrokerSession
+from app.brokers.models import BrokerAccount
+from app.brokers.registry import broker_registry
+from app.brokers.base.schemas import OrderRequest
 from app.core.exceptions import ResourceNotFoundError, ValidationError
 from app.core.config import settings
 
@@ -254,31 +256,36 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
 
         await log_event(db, trace.id, "QUOTA_RESERVATION", "SUCCESS", f"Quota reserved: {reservation.usedExecutionCount}/{reservation.maxExecutionLimit}")
 
-        # 6. Broker Session Check
+        # 6. Broker Account Check via Generic Broker Abstraction
         trace.current_step = "BROKER_SESSION_CHECK"
         trace.status = "BROKER_SESSION_CHECKING"
         db.add(trace)
         await db.flush()
 
-        stmt_session = select(DhanBrokerSession).where(DhanBrokerSession.user_id == user_id)
+        stmt_session = select(BrokerAccount).where(BrokerAccount.user_id == user_id)
         res_session = await db.execute(stmt_session)
-        dhan_session = res_session.scalar_one_or_none()
+        broker_accounts = list(res_session.scalars().all())
 
-        if not dhan_session:
-            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_NOT_FOUND", "No connected Dhan session found for user", "BROKER_SESSION_INVALID")
+        if not broker_accounts:
+            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "BROKER_SESSION_NOT_FOUND", "No connected broker session found for user", "BROKER_SESSION_INVALID")
 
-        trace.broker_account_id = dhan_session.id
-        trace.broker = dhan_session.broker_name
+        # Select primary active broker account
+        broker_account = next((acc for acc in broker_accounts if acc.status.upper() == "ACTIVE"), broker_accounts[0])
+
+        trace.broker_account_id = broker_account.id
+        trace.broker = broker_account.broker_code
         db.add(trace)
         await db.flush()
 
-        if dhan_session.status.upper() != "ACTIVE":
-            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_INVALID", f"Session status is: {dhan_session.status}", "BROKER_SESSION_INVALID")
+        # Resolve broker adapter from registry dynamically
+        adapter = broker_registry.get(broker_account.broker_code)
+        val_res = await adapter.validate_connection(broker_account, broker_account.credentials)
 
-        if dhan_session.expiry_time and dhan_session.expiry_time.astimezone(timezone.utc) < datetime.now(timezone.utc):
-            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "DHAN_SESSION_EXPIRED", f"Session expired at {dhan_session.expiry_time}", "BROKER_SESSION_INVALID")
+        if not val_res.is_valid:
+            failure_code = "BROKER_SESSION_EXPIRED" if val_res.status == "EXPIRED" else "BROKER_SESSION_INVALID"
+            return await fail_trace(db, trace, "BROKER_SESSION_CHECK", failure_code, val_res.message or f"Session status is {val_res.status}", "BROKER_SESSION_INVALID")
 
-        await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", "Dhan session verified")
+        await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", f"{broker_account.broker_code} broker session verified")
 
         # 7. Start Position Execution
         trace.status = "PROCESSING"
@@ -299,12 +306,12 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
         await db.flush()
 
         exec_logs = []
-        exec_logs.append(f"[{datetime.now()}] Started execution in {strategy.mode} mode.")
+        exec_logs.append(f"[{datetime.now()}] Started execution in {strategy.mode} mode using broker {broker_account.broker_code}.")
 
         all_legs_success = True
         any_leg_placed = False
 
-        # 8. Loop and place legs
+        # 8. Loop and place legs via Broker Adapter
         for leg in version.legs:
             exec_leg = StrategyExecutionLeg(
                 strategy_execution_id=execution.id,
@@ -329,27 +336,23 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                 await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"PAPER Leg filled: {leg_msg}")
                 any_leg_placed = True
             else:
-                # LIVE Dhan execution request simulation
+                # LIVE broker execution request via BrokerAdapter
                 try:
-                    from app.brokers import service as broker_service
-                    # place order via httpx client calling Dhan HQ
-                    order_response = await broker_service.place_dhan_order(
-                        email=user.email,
-                        token=dhan_session.access_token,
-                        client_id=dhan_session.dhan_client_id,
+                    order_req = OrderRequest(
                         trading_symbol=resolved.symbol,
                         security_id=resolved.security_id,
                         transaction_type=leg.side,
                         quantity=exec_leg.quantity
                     )
+                    order_response = await adapter.place_order(broker_account, broker_account.credentials, order_req)
                     
-                    broker_order_id = order_response.get("orderId", f"DHAN-{str(uuid.uuid4())[:8]}")
+                    broker_order_id = order_response.broker_order_id
                     exec_leg.status = "FILLED"
                     exec_leg.price = Decimal("120.50")
                     exec_leg.broker_order_id = broker_order_id
                     db.add(exec_leg)
 
-                    exec_logs.append(f"[{datetime.now()}] LIVE Leg {leg.sequence} executed. Broker ID: {broker_order_id}")
+                    exec_logs.append(f"[{datetime.now()}] LIVE Leg {leg.sequence} executed via {broker_account.broker_code}. Broker ID: {broker_order_id}")
                     await log_event(db, trace.id, "ORDER_PLACED", "SUCCESS", f"LIVE Leg placed: {leg_msg} (Broker ID: {broker_order_id})")
                     any_leg_placed = True
                 except Exception as ex:
@@ -358,7 +361,7 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                     db.add(exec_leg)
 
                     exec_logs.append(f"[{datetime.now()}] ERROR placing leg {leg.sequence}: {str(ex)}")
-                    await log_event(db, trace.id, "ORDER_PLACING", "FAILED", f"Failed placing order: {leg_msg}. Error: {str(ex)}", "DHAN_ORDER_REJECTED")
+                    await log_event(db, trace.id, "ORDER_PLACING", "FAILED", f"Failed placing order: {leg_msg}. Error: {str(ex)}", "BROKER_ORDER_REJECTED")
 
         # 9. Conclude Execution Status
         execution.execution_logs = "\n".join(exec_logs)
@@ -384,7 +387,7 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
 
             trace.status = "PARTIALLY_EXECUTED"
             trace.current_step = "ORDER_PLACEMENT"
-            trace.failure_code = "DHAN_ORDER_REJECTED"
+            trace.failure_code = "BROKER_ORDER_REJECTED"
             trace.failure_reason = "Some legs failed to execute"
             trace.completed_at = datetime.now(timezone.utc)
             db.add(trace)
@@ -393,7 +396,7 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                 eligible=True,
                 executed=False,
                 status="PARTIALLY_EXECUTED",
-                failureCode="DHAN_ORDER_REJECTED",
+                failureCode="BROKER_ORDER_REJECTED",
                 failureReason="Some legs failed to execute",
                 executionId=execution.id
             )
@@ -402,7 +405,7 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
 
             trace.status = "FAILED"
             trace.current_step = "ORDER_PLACEMENT"
-            trace.failure_code = "DHAN_ORDER_REJECTED"
+            trace.failure_code = "BROKER_ORDER_REJECTED"
             trace.failure_reason = "All legs failed to place orders"
             trace.completed_at = datetime.now(timezone.utc)
             db.add(trace)
@@ -411,7 +414,7 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                 eligible=True,
                 executed=False,
                 status="FAILED",
-                failureCode="DHAN_ORDER_REJECTED",
+                failureCode="BROKER_ORDER_REJECTED",
                 failureReason="All legs failed to place orders"
             )
 

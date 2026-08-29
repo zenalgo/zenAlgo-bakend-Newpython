@@ -7,7 +7,7 @@ from app.users.models import User, UserRole
 from app.subscriptions.models import Subscription, Plan, PlanStrategyAccess
 from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyEntrySetting, StrategyEntryDay, StrategyExitSetting
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
-from app.brokers.models import DhanBrokerSession
+from app.brokers.models import BrokerAccount
 from app.execution.service import execute_signal_batch
 from app.auth.service import hash_password
 
@@ -30,25 +30,27 @@ async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
     db_session.add_all([sub1, sub2, sub3])
     await db_session.flush()
 
-    # 3. Setup Broker Sessions
+    # 3. Setup Broker Accounts (Generic BrokerAccount)
     # User 1: Active Valid Session
-    session1 = DhanBrokerSession(
+    session1 = BrokerAccount(
         user_id=user1.id,
-        dhan_client_id="CLIENT1",
-        access_token="token1",
+        broker_code="DHAN",
+        account_client_id="CLIENT1",
         status="ACTIVE",
-        expiry_time=now + timedelta(hours=5),
-        broker_name="DHAN"
+        expiry_time=now + timedelta(hours=5)
     )
+    session1.set_credentials({"clientId": "CLIENT1", "accessToken": "token1"})
+
     # User 2: Expired Session
-    session2 = DhanBrokerSession(
+    session2 = BrokerAccount(
         user_id=user2.id,
-        dhan_client_id="CLIENT2",
-        access_token="token2",
+        broker_code="DHAN",
+        account_client_id="CLIENT2",
         status="ACTIVE",
-        expiry_time=now - timedelta(minutes=1),
-        broker_name="DHAN"
+        expiry_time=now - timedelta(minutes=1)
     )
+    session2.set_credentials({"clientId": "CLIENT2", "accessToken": "token2"})
+
     # User 3: Missing Session -> Not seeded in table
     db_session.add_all([session1, session2])
     await db_session.flush()
@@ -106,7 +108,6 @@ async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
     await execute_signal_batch(signal.id)
 
     # 8. Assertions
-    # Fetch batch record
     stmt_batch = select(StrategyExecutionBatch).where(StrategyExecutionBatch.signal_id == signal.id)
     res_batch = await db_session.execute(stmt_batch)
     batch = res_batch.scalar_one()
@@ -143,11 +144,11 @@ async def test_full_signal_batch_execution_pipeline(db_session, seed_plans):
     res_t2 = await db_session.execute(stmt_t2)
     t2 = res_t2.scalar_one()
     assert t2.status == "BROKER_SESSION_INVALID"
-    assert t2.failure_code == "DHAN_SESSION_EXPIRED"
+    assert t2.failure_code == "BROKER_SESSION_EXPIRED"
 
     # User 3 Trace: MISSING
     stmt_t3 = select(StrategyUserExecutionTrace).where(StrategyUserExecutionTrace.execution_batch_id == batch.id, StrategyUserExecutionTrace.user_id == user3.id)
     res_t3 = await db_session.execute(stmt_t3)
     t3 = res_t3.scalar_one()
     assert t3.status == "BROKER_SESSION_INVALID"
-    assert t3.failure_code == "DHAN_SESSION_NOT_FOUND"
+    assert t3.failure_code == "BROKER_SESSION_NOT_FOUND"

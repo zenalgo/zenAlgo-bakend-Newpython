@@ -64,3 +64,34 @@ def decode_token(token: str) -> Optional[dict]:
         return payload
     except jwt.PyJWTError:
         return None
+
+import json
+import hashlib
+from cryptography.fernet import Fernet
+
+def _get_fernet_key() -> bytes:
+    key_hash = hashlib.sha256(settings.JWT_SECRET.encode()).digest()
+    return base64.urlsafe_b64encode(key_hash)
+
+def encrypt_credentials(credentials: dict) -> str:
+    """Encrypts credential dictionary into a secure token string."""
+    if not credentials:
+        return ""
+    f = Fernet(_get_fernet_key())
+    payload = json.dumps(credentials).encode("utf-8")
+    return f.encrypt(payload).decode("utf-8")
+
+def decrypt_credentials(encrypted_str: Optional[str]) -> dict:
+    """Decrypts secure token string into credential dictionary."""
+    if not encrypted_str:
+        return {}
+    try:
+        f = Fernet(_get_fernet_key())
+        decrypted = f.decrypt(encrypted_str.encode("utf-8")).decode("utf-8")
+        return json.loads(decrypted)
+    except Exception:
+        try:
+            return json.loads(encrypted_str)
+        except Exception:
+            return {}
+

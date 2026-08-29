@@ -2,33 +2,76 @@ from sqlalchemy import Column, BigInteger, String, Numeric, Integer, Boolean, Da
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
+from app.core.security import encrypt_credentials, decrypt_credentials
 
-class DhanBrokerSession(Base):
-    __tablename__ = "dhan_broker_sessions"
+class BrokerAccount(Base):
+    """Generic broker account/session entity supporting any registered broker."""
+
+    __tablename__ = "broker_accounts"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    dhan_client_id = Column(String(50), nullable=False, index=True)
-    dhan_client_name = Column(String(200), nullable=True)
-    dhan_client_ucc = Column(String(50), nullable=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_code = Column(String(50), nullable=False, index=True)  # DHAN, ZERODHA, MOCK, etc.
+    account_client_id = Column(String(100), nullable=False, index=True)
+    account_name = Column(String(200), nullable=True)
     email = Column(String(255), nullable=True)
     mobile_no = Column(String(50), nullable=True)
-    auth_type = Column(String(50), nullable=False, default="PARTNER")
-    app_id = Column(String(100), nullable=True)
-    app_secret = Column(String(255), nullable=True)
-    access_token = Column(Text, nullable=False)
+    auth_type = Column(String(50), nullable=False, default="TOKEN")
+    encrypted_credentials = Column(Text, nullable=True)
     expiry_time = Column(DateTime(timezone=True), nullable=True)
-    given_power_of_attorney = Column(Boolean, nullable=False, default=False)
     primary_ip = Column(String(100), nullable=True)
     secondary_ip = Column(String(100), nullable=True)
-    status = Column(String(50), nullable=False, default="ACTIVE", index=True) # ACTIVE, EXPIRED, etc.
+    status = Column(String(50), nullable=False, default="ACTIVE", index=True)  # ACTIVE, EXPIRED, DISABLED
+    connection_date = Column(Date, nullable=False, server_default=func.now())
     last_sync_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
-    broker_name = Column(String(50), nullable=False, default="DHAN")
-    connection_date = Column(Date, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "broker_code", name="uk_user_broker_code"),
+    )
 
     user = relationship("User")
+
+    @property
+    def credentials(self) -> dict:
+        return decrypt_credentials(self.encrypted_credentials)
+
+    def set_credentials(self, cred_dict: dict) -> None:
+        self.encrypted_credentials = encrypt_credentials(cred_dict)
+
+    # Backward compatibility properties for Dhan session accessors
+    @property
+    def dhan_client_id(self) -> str:
+        return self.account_client_id
+
+    @dhan_client_id.setter
+    def dhan_client_id(self, val: str):
+        self.account_client_id = val
+
+    @property
+    def access_token(self) -> str:
+        creds = self.credentials
+        return creds.get("accessToken", "")
+
+    @access_token.setter
+    def access_token(self, val: str):
+        creds = self.credentials
+        creds["accessToken"] = val
+        self.set_credentials(creds)
+
+    @property
+    def broker_name(self) -> str:
+        return self.broker_code
+
+    @broker_name.setter
+    def broker_name(self, val: str):
+        self.broker_code = val
+
+
+# Alias DhanBrokerSession to BrokerAccount for legacy queries/imports
+DhanBrokerSession = BrokerAccount
+
 
 class UserHolding(Base):
     __tablename__ = "user_holdings"
@@ -57,6 +100,7 @@ class UserHolding(Base):
 
     user = relationship("User")
 
+
 class UserPosition(Base):
     __tablename__ = "user_positions"
 
@@ -84,6 +128,7 @@ class UserPosition(Base):
     )
 
     user = relationship("User")
+
 
 class UserOrder(Base):
     __tablename__ = "user_orders"
@@ -116,6 +161,7 @@ class UserOrder(Base):
 
     user = relationship("User")
 
+
 class UserTrade(Base):
     __tablename__ = "user_trades"
 
@@ -139,13 +185,14 @@ class UserTrade(Base):
 
     user = relationship("User")
 
+
 class UserFundSnapshot(Base):
     __tablename__ = "user_fund_snapshots"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     broker_name = Column(String(50), nullable=False, default="DHAN")
-    dhan_client_id = Column(String(50), nullable=True)
+    account_client_id = Column(String(100), nullable=True)
     available_balance = Column(Numeric(15, 2), default=0.00)
     sod_limit = Column(Numeric(15, 2), default=0.00)
     collateral_amount = Column(Numeric(15, 2), default=0.00)
@@ -162,3 +209,12 @@ class UserFundSnapshot(Base):
     )
 
     user = relationship("User")
+
+    # Backward compatibility accessor
+    @property
+    def dhan_client_id(self) -> str:
+        return self.account_client_id
+
+    @dhan_client_id.setter
+    def dhan_client_id(self, val: str):
+        self.account_client_id = val
