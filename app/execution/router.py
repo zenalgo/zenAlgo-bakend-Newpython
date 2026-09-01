@@ -156,6 +156,7 @@ async def get_batch_user_traces(
 
     data = [
         StrategyUserExecutionTraceResponse(
+            traceId=t.id,
             userId=t.user_id,
             status=t.status,
             currentStep=t.current_step or "INIT",
@@ -211,6 +212,7 @@ async def get_user_execution_trace_details(
     ]
 
     data = StrategyUserExecutionTraceResponse(
+        traceId=trace.id,
         userId=trace.user_id,
         status=trace.status,
         currentStep=trace.current_step or "INIT",
@@ -256,6 +258,7 @@ async def get_user_executions(
 
     data = [
         StrategyUserExecutionTraceResponse(
+            traceId=t.id,
             userId=t.user_id,
             status=t.status,
             currentStep=t.current_step or "INIT",
