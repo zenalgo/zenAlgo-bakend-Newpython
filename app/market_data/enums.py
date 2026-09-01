@@ -1,0 +1,14 @@
+import enum
+
+class MarketEventType(str, enum.Enum):
+    TICK = "TICK"
+    CANDLE_OPENED = "CANDLE_OPENED"
+    CANDLE_UPDATED = "CANDLE_UPDATED"
+    CANDLE_CLOSED = "CANDLE_CLOSED"
+
+class FeedConnectionState(str, enum.Enum):
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTING = "CONNECTING"
+    CONNECTED = "CONNECTED"
+    RECONNECTING = "RECONNECTING"
+    FAILED = "FAILED"

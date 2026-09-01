@@ -94,6 +94,8 @@ class ScheduleConfig(BaseModel):
     weeklyCycleScope: Optional[str] = Field(None, alias="weeklyCycleScope")
     entryDays: Optional[List[str]] = Field(None, alias="entryDays")
     exitDays: Optional[List[str]] = Field(None, alias="exitDays")
+    applicableMonths: Optional[List[str]] = Field(None, alias="applicableMonths")
+    selectedMonthlyDate: Optional[str] = Field(None, alias="selectedMonthlyDate")
 
     model_config = {
         "populate_by_name": True
