@@ -19,14 +19,28 @@ class StrategyRepository:
         return res.scalar_one_or_none()
 
     @staticmethod
-    async def list_strategies_by_user(db: AsyncSession, user_id: int, page: int, size: int) -> List[Strategy]:
-        stmt = (
-            select(Strategy)
-            .where(Strategy.user_id == user_id)
-            .order_by(Strategy.id.desc())
-            .offset(page * size)
-            .limit(size)
-        )
+    async def list_strategies_by_user(
+        db: AsyncSession,
+        user_id: Optional[int] = None,
+        page: int = 0,
+        size: int = 20,
+        search: Optional[str] = None,
+        mode: Optional[str] = None,
+        status: Optional[str] = None,
+        is_admin: bool = False
+    ) -> List[Strategy]:
+        stmt = select(Strategy)
+        if not is_admin and user_id is not None:
+            stmt = stmt.where(Strategy.user_id == user_id)
+        if search:
+            term = f"%{search.strip()}%"
+            stmt = stmt.where(Strategy.name.ilike(term) | Strategy.description.ilike(term))
+        if mode:
+            stmt = stmt.where(Strategy.mode == mode.upper())
+        if status:
+            stmt = stmt.where(Strategy.status == status.upper())
+
+        stmt = stmt.order_by(Strategy.id.desc()).offset(page * size).limit(size)
         res = await db.execute(stmt)
         return list(res.scalars().all())
 

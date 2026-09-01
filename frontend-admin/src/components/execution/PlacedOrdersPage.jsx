@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Package, RefreshCw, Square, CheckCircle, TrendingUp, AlertCircle, PlayCircle, Zap } from 'lucide-react';
+import { Package, RefreshCw, Square, CheckCircle, TrendingUp, AlertCircle, PlayCircle, Zap, Search, Filter } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
+import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
 
 export const PlacedOrdersPage = ({ selectedStrategyId }) => {
@@ -12,6 +13,12 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
   const [placedOrders, setPlacedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [triggering, setTriggering] = useState(false);
+
+  // Filters & Pagination
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
     strategyApi.getStrategies().then((res) => {
@@ -27,7 +34,13 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
     if (!currentStrategyId) return;
     setLoading(true);
     try {
-      const res = await executionApi.getPlacedOrders(currentStrategyId);
+      const params = {
+        page,
+        size: pageSize,
+        status: statusFilter !== 'ALL' ? statusFilter : undefined,
+        search: search || undefined,
+      };
+      const res = await executionApi.getPlacedOrders(currentStrategyId, params);
       setPlacedOrders(res.data || []);
     } catch (err) {
       console.error(err);
@@ -41,7 +54,15 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
     if (currentStrategyId) {
       loadOrders();
     }
-  }, [currentStrategyId]);
+  }, [currentStrategyId, page, pageSize, statusFilter]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setPage(0);
+      if (currentStrategyId) loadOrders();
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   const handleSimulateTrade = async () => {
     if (!currentStrategyId) return;
@@ -69,9 +90,17 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
     }
   };
 
+  const filteredOrders = placedOrders.filter((o) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    const matchId = String(o.executionId).includes(s) || String(o.userId).includes(s);
+    const matchLeg = (o.legs || []).some((l) => (l.tradingSymbol || '').toLowerCase().includes(s) || (l.brokerOrderId || '').toLowerCase().includes(s));
+    return matchId || matchLeg;
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Placed Orders & Open Paper Positions</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Real-time execution ledger, contract legs, fill prices, and live PnL.</p>
@@ -94,7 +123,7 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
           <label style={{ margin: 0, whiteSpace: 'nowrap' }}>Active Strategy:</label>
           <select
             value={currentStrategyId}
-            onChange={(e) => setCurrentStrategyId(e.target.value)}
+            onChange={(e) => { setCurrentStrategyId(e.target.value); setPage(0); }}
             className="input-field"
             style={{ maxWidth: '420px' }}
           >
@@ -117,8 +146,38 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
         </button>
       </div>
 
-      {/* Orders Table */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
+      {/* Filter & Orders Table */}
+      <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '260px', maxWidth: '400px' }}>
+            <Search size={18} color="var(--text-dim)" />
+            <input
+              type="text"
+              placeholder="Search by order ID, contract, or symbol..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input-field"
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Filter size={14} color="var(--text-dim)" />
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+              className="input-field"
+              style={{ width: '150px', padding: '6px 10px' }}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="RUNNING">RUNNING</option>
+              <option value="FILLED">FILLED</option>
+              <option value="COMPLETED">COMPLETED</option>
+              <option value="SQUARED_OFF">SQUARED_OFF</option>
+            </select>
+          </div>
+        </div>
+
         <div className="table-container">
           <table>
             <thead>
@@ -139,10 +198,10 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
                     Loading placed orders...
                   </td>
                 </tr>
-              ) : placedOrders.length === 0 ? (
+              ) : filteredOrders.length === 0 ? (
                 <tr>
                   <td colSpan="7" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-                    No placed orders recorded for Strategy #{currentStrategyId} yet.
+                    No placed orders recorded for Strategy #{currentStrategyId} matching filters.
                     <div style={{ marginTop: '12px' }}>
                       <button onClick={handleSimulateTrade} className="btn btn-emerald" style={{ padding: '8px 18px' }}>
                         <Zap size={16} />
@@ -152,7 +211,7 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
                   </td>
                 </tr>
               ) : (
-                placedOrders.map((order) => (
+                filteredOrders.map((order) => (
                   <tr key={order.executionId}>
                     <td className="font-mono" style={{ color: 'var(--accent-cyan)', fontWeight: 700 }}>
                       #{order.executionId}
@@ -191,6 +250,16 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Bar */}
+        <Pagination
+          currentPage={page}
+          pageSize={pageSize}
+          totalItems={placedOrders.length >= pageSize ? (page + 2) * pageSize : (page * pageSize) + placedOrders.length}
+          onPageChange={(newPage) => setPage(newPage)}
+          onPageSizeChange={(newSize) => { setPageSize(newSize); setPage(0); }}
+          pageSizeOptions={[5, 10, 20, 50]}
+        />
       </div>
     </div>
   );

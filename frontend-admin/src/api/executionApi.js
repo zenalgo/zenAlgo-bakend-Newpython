@@ -1,24 +1,18 @@
 import axiosClient from './axiosClient';
 
 export const executionApi = {
-  // Batch Execution Tracking
-  getStrategyBatches: (strategyId, date) =>
-    axiosClient.get(`/admin/execution/strategies/${strategyId}/batches`, {
-      params: { trading_date: date },
-    }),
+  getStrategyBatches: (strategyId, params) =>
+    axiosClient.get(`/admin/execution/strategies/${strategyId}/batches`, { params }),
 
   getBatchDetails: (batchId) =>
     axiosClient.get(`/admin/execution/batches/${batchId}`),
 
-  getBatchTraces: (batchId, status) =>
-    axiosClient.get(`/admin/execution/batches/${batchId}/traces`, {
-      params: { status },
-    }),
+  getBatchTraces: (batchId, params) =>
+    axiosClient.get(`/admin/execution/batches/${batchId}/traces`, { params }),
 
   getBatchFailures: (batchId) =>
     axiosClient.get(`/admin/execution/batches/${batchId}/failures`),
 
-  // User Trace & Timeline Stepper
   getTraceDetails: (traceId) =>
     axiosClient.get(`/admin/execution/traces/${traceId}`),
 
@@ -27,13 +21,9 @@ export const executionApi = {
       params: { strategy_id: strategyId },
     }),
 
-  // Placed Orders & Open Positions
-  getPlacedOrders: (strategyId, status) =>
-    axiosClient.get(`/admin/execution/strategies/${strategyId}/placed-orders`, {
-      params: { status },
-    }),
+  getPlacedOrders: (strategyId, params) =>
+    axiosClient.get(`/admin/execution/strategies/${strategyId}/placed-orders`, { params }),
 
-  // Live 5m Simulation Trigger
   simulateExecution: (strategyId) =>
     axiosClient.post(`/admin/execution/strategies/${strategyId}/simulate-execution`),
 };

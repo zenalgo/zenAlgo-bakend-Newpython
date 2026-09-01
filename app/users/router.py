@@ -31,14 +31,19 @@ async def provision(
 @router.get("", response_model=ApiResponse[List[UserDto]])
 async def list_users(
     request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    users = await service.get_all_users(db)
+    users = await service.get_all_users(db, page=page, size=size, search=search, role=role, is_active=is_active)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
-        message="Successfully retrieved all users",
+        message="Successfully retrieved users",
         data=users,
         requestId=request_id
     )

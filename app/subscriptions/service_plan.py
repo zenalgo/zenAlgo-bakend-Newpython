@@ -36,6 +36,27 @@ async def get_active_plans(db: AsyncSession) -> List[Plan]:
     res = await db.execute(stmt)
     return list(res.scalars().all())
 
+async def get_all_plans(
+    db: AsyncSession,
+    page: int = 0,
+    size: int = 50,
+    search: str = None,
+    subscription_type: str = None,
+    is_active: bool = None
+) -> List[Plan]:
+    """Lists all plans with pagination and filtering."""
+    stmt = select(Plan)
+    if search:
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(Plan.name.ilike(term) | Plan.code.ilike(term) | Plan.description.ilike(term))
+    if subscription_type:
+        stmt = stmt.where(Plan.subscription_type == subscription_type.upper())
+    if is_active is not None:
+        stmt = stmt.where(Plan.is_active == is_active)
+    stmt = stmt.order_by(Plan.display_order.asc(), Plan.id.asc()).offset(page * size).limit(size)
+    res = await db.execute(stmt)
+    return list(res.scalars().all())
+
 async def get_plan_details(db: AsyncSession, plan_id: int) -> Plan:
     """Finds a plan by ID or raises 404."""
     stmt = select(Plan).where(Plan.id == plan_id)

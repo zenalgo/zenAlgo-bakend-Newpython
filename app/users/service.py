@@ -60,10 +60,31 @@ async def provision_user(db: AsyncSession, request: ProvisionUserRequest, execut
     await create_wallet(db, newUser)
     return newUser
 
-async def get_all_users(db: AsyncSession) -> List[UserDto]:
-    """Retrieves all registered users mapped to UserDto."""
-    stmt = select(User).order_id = User.id
-    result = await db.execute(select(User).order_by(User.id.desc()))
+async def get_all_users(
+    db: AsyncSession,
+    page: int = 0,
+    size: int = 50,
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    is_active: Optional[bool] = None
+) -> List[UserDto]:
+    """Retrieves all registered users mapped to UserDto with pagination and filtering."""
+    stmt = select(User)
+    if search:
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(
+            User.email.ilike(term) |
+            User.first_name.ilike(term) |
+            User.last_name.ilike(term) |
+            User.referral_code.ilike(term)
+        )
+    if role:
+        stmt = stmt.where(User.role == role.upper())
+    if is_active is not None:
+        stmt = stmt.where(User.is_active == is_active)
+
+    stmt = stmt.order_by(User.id.desc()).offset(page * size).limit(size)
+    result = await db.execute(stmt)
     users = result.scalars().all()
     return [UserDto.model_validate(user) for user in users]
 

@@ -246,15 +246,21 @@ async def create_plan(
 @admin_router.get("/plans", response_model=ApiResponse[List[PlanResponse]])
 async def list_plans(
     request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    subscription_type: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
-    # Publicly accessible list active plans
-    plans = await service_plan.get_active_plans(db)
+    plans = await service_plan.get_all_plans(
+        db, page=page, size=size, search=search, subscription_type=subscription_type, is_active=is_active
+    )
     dtos = [PlanResponse.model_validate(p) for p in plans]
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
-        message="Retrieved active plans list",
+        message="Retrieved plans list",
         data=dtos,
         requestId=request_id
     )

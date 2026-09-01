@@ -27,10 +27,23 @@ async def get_wallet_by_user_id(db: AsyncSession, user_id: int) -> Wallet:
         raise ResourceNotFoundError("Wallet not found for this user")
     return wallet
 
-async def get_transaction_history(db: AsyncSession, user_id: int) -> List[WalletTransaction]:
-    """Retrieves all transaction logs for a user."""
+async def get_transaction_history(
+    db: AsyncSession,
+    user_id: int,
+    page: int = 0,
+    size: int = 50,
+    tx_type: Optional[str] = None,
+    search: Optional[str] = None
+) -> List[WalletTransaction]:
+    """Retrieves all transaction logs for a user with pagination and filters."""
     wallet = await get_wallet_by_user_id(db, user_id)
-    stmt = select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id).order_by(WalletTransaction.created_at.desc())
+    stmt = select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id)
+    if tx_type:
+        stmt = stmt.where(WalletTransaction.transaction_type == tx_type.upper())
+    if search:
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(WalletTransaction.description.ilike(term) | WalletTransaction.reference_id.ilike(term))
+    stmt = stmt.order_by(WalletTransaction.created_at.desc()).offset(page * size).limit(size)
     res = await db.execute(stmt)
     return list(res.scalars().all())
 

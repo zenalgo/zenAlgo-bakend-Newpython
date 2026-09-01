@@ -759,8 +759,19 @@ class StrategyService:
         return await build_strategy_response(db, strategy)
 
     @staticmethod
-    async def list_strategies(db: AsyncSession, user_id: int, page: int, size: int) -> List[StrategyResponse]:
-        strategies = await StrategyRepository.list_strategies_by_user(db, user_id, page, size)
+    async def list_strategies(
+        db: AsyncSession,
+        user_id: Optional[int] = None,
+        page: int = 0,
+        size: int = 20,
+        search: Optional[str] = None,
+        mode: Optional[str] = None,
+        status: Optional[str] = None,
+        is_admin: bool = False
+    ) -> List[StrategyResponse]:
+        strategies = await StrategyRepository.list_strategies_by_user(
+            db, user_id=user_id, page=page, size=size, search=search, mode=mode, status=status, is_admin=is_admin
+        )
         results = []
         for s in strategies:
             results.append(await build_strategy_response(db, s))

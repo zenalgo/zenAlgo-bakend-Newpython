@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck, User, Mail, Award } from 'lucide-react';
+import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck, User, Mail, Award, Filter } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import UserTraceStepperModal from './UserTraceStepperModal';
+import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
 
 export const BatchAuditingPage = ({ selectedStrategyId }) => {
@@ -17,6 +18,18 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
   const [loading, setLoading] = useState(false);
   const [loadingTraces, setLoadingTraces] = useState(false);
   const [triggering, setTriggering] = useState(false);
+
+  // Batch Filters & Pagination
+  const [batchStatusFilter, setBatchStatusFilter] = useState('ALL');
+  const [batchPage, setBatchPage] = useState(0);
+  const [batchPageSize, setBatchPageSize] = useState(5);
+
+  // Subscriber Filters & Pagination
+  const [subscriberSearch, setSubscriberSearch] = useState('');
+  const [subscriberStatusFilter, setSubscriberStatusFilter] = useState('ALL');
+  const [subscriberPage, setSubscriberPage] = useState(0);
+  const [subscriberPageSize, setSubscriberPageSize] = useState(5);
+
   const subscriberSectionRef = useRef(null);
 
   useEffect(() => {
@@ -33,7 +46,12 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
     if (!currentStrategyId) return;
     setLoading(true);
     try {
-      const res = await executionApi.getStrategyBatches(currentStrategyId);
+      const params = {
+        page: batchPage,
+        size: batchPageSize,
+        status: batchStatusFilter !== 'ALL' ? batchStatusFilter : undefined,
+      };
+      const res = await executionApi.getStrategyBatches(currentStrategyId, params);
       const bList = res.data || [];
       setBatches(bList);
       if (bList.length > 0) {
@@ -53,13 +71,19 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
     if (currentStrategyId) {
       loadBatches();
     }
-  }, [currentStrategyId]);
+  }, [currentStrategyId, batchPage, batchPageSize, batchStatusFilter]);
 
   const loadBatchTraces = async (bId) => {
     if (!bId) return;
     setLoadingTraces(true);
     try {
-      const res = await executionApi.getBatchTraces(bId);
+      const params = {
+        page: subscriberPage,
+        size: subscriberPageSize,
+        status: subscriberStatusFilter !== 'ALL' ? subscriberStatusFilter : undefined,
+        search: subscriberSearch || undefined,
+      };
+      const res = await executionApi.getBatchTraces(bId, params);
       setTraces(res.data || []);
     } catch (err) {
       console.error(err);
@@ -72,10 +96,19 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
     if (selectedBatchId) {
       loadBatchTraces(selectedBatchId);
     }
-  }, [selectedBatchId]);
+  }, [selectedBatchId, subscriberPage, subscriberPageSize, subscriberStatusFilter]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSubscriberPage(0);
+      if (selectedBatchId) loadBatchTraces(selectedBatchId);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [subscriberSearch]);
 
   const handleSelectBatch = (bId) => {
     setSelectedBatchId(bId);
+    setSubscriberPage(0);
     if (subscriberSectionRef.current) {
       subscriberSectionRef.current.scrollIntoView({ behavior: 'smooth' });
     }
@@ -97,6 +130,15 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
 
   const selectedStrategy = strategies.find((s) => String(s.id) === String(currentStrategyId));
 
+  const filteredTraces = traces.filter((t) => {
+    if (!subscriberSearch) return true;
+    const s = subscriberSearch.toLowerCase();
+    const matchName = (t.userName || '').toLowerCase().includes(s);
+    const matchEmail = (t.userEmail || '').toLowerCase().includes(s);
+    const matchId = String(t.userId).includes(s);
+    return matchName || matchEmail || matchId;
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Page Header */}
@@ -114,7 +156,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
             <span style={{ fontWeight: 700, color: 'var(--accent-cyan)', whiteSpace: 'nowrap' }}>Active Strategy Fleet:</span>
             <select
               value={currentStrategyId}
-              onChange={(e) => setCurrentStrategyId(e.target.value)}
+              onChange={(e) => { setCurrentStrategyId(e.target.value); setBatchPage(0); }}
               className="input-field"
               style={{ maxWidth: '420px', fontWeight: 600 }}
             >
@@ -170,8 +212,8 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
       </div>
 
       {/* Execution Batches Table */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fff' }}>
               1. Execution Signal Batches for Strategy #{currentStrategyId}
@@ -179,6 +221,22 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: 0 }}>
               Whenever a market candle triggers an entry signal, a batch is created to dispatch copy-orders to all subscribed users.
             </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Filter size={14} color="var(--text-dim)" />
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status:</span>
+            <select
+              value={batchStatusFilter}
+              onChange={(e) => { setBatchStatusFilter(e.target.value); setBatchPage(0); }}
+              className="input-field"
+              style={{ width: '150px', padding: '6px 10px' }}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="COMPLETED">COMPLETED</option>
+              <option value="PROCESSING">PROCESSING</option>
+              <option value="FAILED">FAILED</option>
+            </select>
           </div>
         </div>
 
@@ -201,7 +259,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
               {batches.length === 0 ? (
                 <tr>
                   <td colSpan="9" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-                    No execution batches recorded for Strategy #{currentStrategyId} yet.
+                    No execution batches recorded for Strategy #{currentStrategyId} matching filters.
                     <div style={{ marginTop: '12px' }}>
                       <button onClick={handleSimulateTrade} className="btn btn-emerald" style={{ padding: '8px 18px' }}>
                         <Zap size={14} />
@@ -243,11 +301,21 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
             </tbody>
           </table>
         </div>
+
+        {/* Batch Pagination */}
+        <Pagination
+          currentPage={batchPage}
+          pageSize={batchPageSize}
+          totalItems={batches.length >= batchPageSize ? (batchPage + 2) * batchPageSize : (batchPage * batchPageSize) + batches.length}
+          onPageChange={(newPage) => setBatchPage(newPage)}
+          onPageSizeChange={(newSize) => { setBatchPageSize(newSize); setBatchPage(0); }}
+          pageSizeOptions={[3, 5, 10, 20]}
+        />
       </div>
 
       {/* Selected Batch: Subscriber User Breakdown */}
-      <div ref={subscriberSectionRef} className="glass-panel" style={{ padding: '24px', border: '1px solid var(--border-highlight)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div ref={subscriberSectionRef} className="glass-panel" style={{ padding: '24px', border: '1px solid var(--border-highlight)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fff' }}>
               2. Subscriber User Audit Breakdown {selectedBatchId ? `(Batch #${selectedBatchId})` : ''}
@@ -262,6 +330,35 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
               <span>Refresh Subscribers</span>
             </button>
           )}
+        </div>
+
+        {/* Subscriber Search & Status Filter */}
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '240px', maxWidth: '380px' }}>
+            <Search size={18} color="var(--text-dim)" />
+            <input
+              type="text"
+              placeholder="Search subscriber by name, email, or ID..."
+              value={subscriberSearch}
+              onChange={(e) => setSubscriberSearch(e.target.value)}
+              className="input-field"
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Filter size={14} color="var(--text-dim)" />
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status:</span>
+            <select
+              value={subscriberStatusFilter}
+              onChange={(e) => { setSubscriberStatusFilter(e.target.value); setSubscriberPage(0); }}
+              className="input-field"
+              style={{ width: '150px', padding: '6px 10px' }}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="EXECUTED">EXECUTED</option>
+              <option value="REJECTED">REJECTED</option>
+            </select>
+          </div>
         </div>
 
         <div className="table-container">
@@ -289,14 +386,14 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
                     Please select a batch above or click <strong>"Inspect Subscribers"</strong>.
                   </td>
                 </tr>
-              ) : traces.length === 0 ? (
+              ) : filteredTraces.length === 0 ? (
                 <tr>
                   <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
-                    No subscriber trace records found in Batch #{selectedBatchId}.
+                    No subscriber trace records found matching filters.
                   </td>
                 </tr>
               ) : (
-                traces.map((t, idx) => {
+                filteredTraces.map((t, idx) => {
                   const traceId = t.traceId || t.id || 1448;
                   const isRejected = t.status === 'REJECTED';
                   const roleName = t.userRole || 'TRADER';
@@ -380,6 +477,16 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
             </tbody>
           </table>
         </div>
+
+        {/* Subscriber Pagination */}
+        <Pagination
+          currentPage={subscriberPage}
+          pageSize={subscriberPageSize}
+          totalItems={filteredTraces.length >= subscriberPageSize ? (subscriberPage + 2) * subscriberPageSize : (subscriberPage * subscriberPageSize) + filteredTraces.length}
+          onPageChange={(newPage) => setSubscriberPage(newPage)}
+          onPageSizeChange={(newSize) => { setSubscriberPageSize(newSize); setSubscriberPage(0); }}
+          pageSizeOptions={[5, 10, 20]}
+        />
       </div>
 
       {/* Vertical Stepper Modal */}

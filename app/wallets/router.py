@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
-from typing import List
+from typing import List, Optional
 
 from app.core.database import get_db
 from app.core.schemas import ApiResponse
@@ -30,10 +30,14 @@ async def get_my_wallet(
 @router.get("/me/transactions", response_model=ApiResponse[List[WalletTransactionDto]])
 async def get_my_transactions(
     request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(50, ge=1, le=100),
+    tx_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     current_user = Depends(require_permission("WALLET_READ")),
     db: AsyncSession = Depends(get_db)
 ):
-    transactions = await service.get_transaction_history(db, current_user.id)
+    transactions = await service.get_transaction_history(db, current_user.id, page=page, size=size, tx_type=tx_type, search=search)
     tx_dtos = [WalletTransactionDto.model_validate(tx) for tx in transactions]
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(

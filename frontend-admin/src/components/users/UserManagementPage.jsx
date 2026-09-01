@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Users, UserCheck, UserX, Shield, Plus, RefreshCw, Search } from 'lucide-react';
+import { Users, UserCheck, UserX, Shield, Plus, RefreshCw, Search, Filter } from 'lucide-react';
 import { usersApi } from '../../api/usersApi';
 import { Modal } from '../common/Modal';
+import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
 
 export const UserManagementPage = () => {
@@ -9,10 +10,16 @@ export const UserManagementPage = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   // New User Form State
   const [email, setEmail] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [password, setPassword] = useState('pass1234');
   const [role, setRole] = useState('TRADER');
   const [referredByCode, setReferredByCode] = useState('');
@@ -21,7 +28,14 @@ export const UserManagementPage = () => {
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const res = await usersApi.getUsers();
+      const params = {
+        page,
+        size: pageSize,
+        search: search || undefined,
+        role: roleFilter !== 'ALL' ? roleFilter : undefined,
+        is_active: statusFilter === 'ACTIVE' ? true : (statusFilter === 'SUSPENDED' ? false : undefined),
+      };
+      const res = await usersApi.getUsers(params);
       setUsers(res.data || []);
     } catch (err) {
       console.error(err);
@@ -33,7 +47,16 @@ export const UserManagementPage = () => {
 
   useEffect(() => {
     loadUsers();
-  }, []);
+  }, [page, pageSize, roleFilter, statusFilter]);
+
+  // Debounced search trigger
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setPage(0);
+      loadUsers();
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   const handleToggleStatus = async (userId, currentActive) => {
     try {
@@ -51,6 +74,8 @@ export const UserManagementPage = () => {
     try {
       await usersApi.provisionUser({
         email,
+        firstName,
+        lastName,
         password,
         role,
         referredByCode: referredByCode || null,
@@ -58,6 +83,8 @@ export const UserManagementPage = () => {
       addToast(`User account for ${email} provisioned successfully!`, 'success');
       setIsModalOpen(false);
       setEmail('');
+      setFirstName('');
+      setLastName('');
       setPassword('pass1234');
       loadUsers();
     } catch (err) {
@@ -67,15 +94,9 @@ export const UserManagementPage = () => {
     }
   };
 
-  const filteredUsers = users.filter((u) =>
-    (u.email || '').toLowerCase().includes(search.toLowerCase()) ||
-    (u.role || '').toLowerCase().includes(search.toLowerCase()) ||
-    (u.referralCode || u.referral_code || '').toLowerCase().includes(search.toLowerCase())
-  );
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>User Directory & Permissions</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
@@ -94,25 +115,60 @@ export const UserManagementPage = () => {
         </div>
       </div>
 
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        {/* Search Bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-          <Search size={18} color="var(--text-dim)" />
-          <input
-            type="text"
-            placeholder="Search by email, role, or referral code..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input-field"
-            style={{ maxWidth: '400px' }}
-          />
+      <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {/* Search & Filter Toolbar */}
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '260px', maxWidth: '450px' }}>
+            <Search size={18} color="var(--text-dim)" />
+            <input
+              type="text"
+              placeholder="Search by email, name, or referral code..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input-field"
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Filter size={14} color="var(--text-dim)" />
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Role:</span>
+              <select
+                value={roleFilter}
+                onChange={(e) => { setRoleFilter(e.target.value); setPage(0); }}
+                className="input-field"
+                style={{ width: '130px', padding: '6px 10px' }}
+              >
+                <option value="ALL">All Roles</option>
+                <option value="TRADER">TRADER</option>
+                <option value="ADMIN">ADMIN</option>
+                <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status:</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+                className="input-field"
+                style={{ width: '130px', padding: '6px 10px' }}
+              >
+                <option value="ALL">All Status</option>
+                <option value="ACTIVE">ACTIVE</option>
+                <option value="SUSPENDED">SUSPENDED</option>
+              </select>
+            </div>
+          </div>
         </div>
 
+        {/* User Table */}
         <div className="table-container">
           <table>
             <thead>
               <tr>
                 <th>User ID</th>
+                <th>Trader Identity</th>
                 <th>Email Address</th>
                 <th>Role</th>
                 <th>Referral Code</th>
@@ -123,24 +179,29 @@ export const UserManagementPage = () => {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                  <td colSpan="7" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
                     Loading platform users...
                   </td>
                 </tr>
-              ) : filteredUsers.length === 0 ? (
+              ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
-                    No users matching your search.
+                  <td colSpan="7" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    No users found matching the selected filters.
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((u) => {
+                users.map((u) => {
                   const isActive = u.isActive !== undefined ? u.isActive : u.is_active;
                   const referral = u.referralCode || u.referral_code || 'REF-STD';
+                  const fullName = `${u.firstName || ''} ${u.lastName || ''}`.trim() || (u.role === 'SUPER_ADMIN' ? 'Super Admin' : `Trader #${u.id}`);
+
                   return (
                     <tr key={u.id}>
                       <td className="font-mono" style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>#{u.id}</td>
-                      <td style={{ fontWeight: 600 }}>{u.email}</td>
+                      <td>
+                        <div style={{ fontWeight: 700, color: '#fff' }}>{fullName}</div>
+                      </td>
+                      <td style={{ color: 'var(--text-main)', fontSize: '0.875rem' }}>{u.email}</td>
                       <td>
                         <span className="badge" style={{
                           background: u.role === 'SUPER_ADMIN' ? 'rgba(168, 85, 247, 0.2)' :
@@ -174,11 +235,44 @@ export const UserManagementPage = () => {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Bar */}
+        <Pagination
+          currentPage={page}
+          pageSize={pageSize}
+          totalItems={users.length >= pageSize ? (page + 2) * pageSize : (page * pageSize) + users.length}
+          onPageChange={(newPage) => setPage(newPage)}
+          onPageSizeChange={(newSize) => { setPageSize(newSize); setPage(0); }}
+          pageSizeOptions={[5, 10, 20, 50]}
+        />
       </div>
 
       {/* Provision User Modal */}
       <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Provision New User Account">
         <form onSubmit={handleProvisionUser} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label>First Name</label>
+              <input
+                type="text"
+                placeholder="First Name"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                className="input-field"
+              />
+            </div>
+            <div>
+              <label>Last Name</label>
+              <input
+                type="text"
+                placeholder="Last Name"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                className="input-field"
+              />
+            </div>
+          </div>
+
           <div>
             <label>Email Address</label>
             <input

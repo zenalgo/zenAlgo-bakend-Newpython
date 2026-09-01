@@ -4,8 +4,8 @@ export const walletsApi = {
   getWallet: () =>
     axiosClient.get('/wallets/me'),
 
-  getTransactions: () =>
-    axiosClient.get('/wallets/me/transactions'),
+  getTransactions: (params) =>
+    axiosClient.get('/wallets/me/transactions', { params }),
 
   deposit: (amount, referenceId, description) =>
     axiosClient.post('/wallets/me/deposit', {

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Play, Square, Activity, RefreshCw, Plus, Layers, ArrowUpRight, CheckCircle2, Clock, AlertTriangle, Zap, Eye } from 'lucide-react';
+import { Play, Square, Activity, RefreshCw, Plus, Layers, ArrowUpRight, CheckCircle2, Clock, AlertTriangle, Zap, Eye, Search, Filter } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { executionApi } from '../../api/executionApi';
+import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
 
 export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNavigateToBatches }) => {
@@ -11,10 +12,24 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
 
+  // Filters & Pagination
+  const [search, setSearch] = useState('');
+  const [modeFilter, setModeFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
+
   const loadStrategies = async () => {
     setLoading(true);
     try {
-      const res = await strategyApi.getStrategies();
+      const params = {
+        page,
+        size: pageSize,
+        search: search || undefined,
+        mode: modeFilter !== 'ALL' ? modeFilter : undefined,
+        status: statusFilter !== 'ALL' ? statusFilter : undefined,
+      };
+      const res = await strategyApi.getStrategies(params);
       setStrategies(res.data || []);
     } catch (err) {
       console.error(err);
@@ -26,7 +41,15 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
 
   useEffect(() => {
     loadStrategies();
-  }, []);
+  }, [page, pageSize, modeFilter, statusFilter]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setPage(0);
+      loadStrategies();
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   const handleDeploy = async (id, mode = 'PAPER') => {
     setActionLoading(id);
@@ -104,19 +127,67 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
           <div style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid #94a3b8' }}>
             <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.85rem' }}>1. WAITING</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Scheduled for market opening time (09:15 AM).</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Scheduled for market opening (09:15 AM).</div>
           </div>
           <div style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-cyan)' }}>
             <div style={{ fontWeight: 700, color: 'var(--accent-cyan)', fontSize: '0.85rem' }}>2. MONITORING_ENTRY</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Scanning 5m live candles for technical rule triggers.</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Scanning 5m live candles for rule triggers.</div>
           </div>
           <div style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-emerald)' }}>
             <div style={{ fontWeight: 700, color: 'var(--accent-emerald)', fontSize: '0.85rem' }}>3. POSITION_OPEN</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Multi-leg orders filled. Trailing stop & targets active.</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Legs filled. Trailing stop & targets active.</div>
           </div>
           <div style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '12px', borderRadius: '6px', borderLeft: '3px solid var(--accent-purple)' }}>
             <div style={{ fontWeight: 700, color: 'var(--accent-purple)', fontSize: '0.85rem' }}>4. SQUARED_OFF</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Target/Stop reached or forced exit at 15:15 PM.</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>Target/Stop reached or forced exit at 15:15.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search & Filter Toolbar */}
+      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '260px', maxWidth: '450px' }}>
+          <Search size={18} color="var(--text-dim)" />
+          <input
+            type="text"
+            placeholder="Search strategies by name or underlying..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input-field"
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Filter size={14} color="var(--text-dim)" />
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Mode:</span>
+            <select
+              value={modeFilter}
+              onChange={(e) => { setModeFilter(e.target.value); setPage(0); }}
+              className="input-field"
+              style={{ width: '120px', padding: '6px 10px' }}
+            >
+              <option value="ALL">All Modes</option>
+              <option value="PAPER">PAPER</option>
+              <option value="LIVE">LIVE</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+              className="input-field"
+              style={{ width: '160px', padding: '6px 10px' }}
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="WAITING">WAITING</option>
+              <option value="MONITORING_ENTRY">MONITORING_ENTRY</option>
+              <option value="ACTIVE_LIVE">ACTIVE_LIVE</option>
+              <option value="SQUARED_OFF">SQUARED_OFF</option>
+              <option value="DRAFT">DRAFT</option>
+            </select>
           </div>
         </div>
       </div>
@@ -129,7 +200,7 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
           </div>
         ) : strategies.length === 0 ? (
           <div className="glass-panel" style={{ padding: '40px', textAlign: 'center', gridColumn: '1 / -1', color: 'var(--text-muted)' }}>
-            No strategies configured yet. Click <strong>"+ Build New Strategy"</strong> to generate one.
+            No strategies found matching filters. Click <strong>"+ Build New Strategy"</strong> to generate one.
           </div>
         ) : (
           strategies.map((s) => (
@@ -236,6 +307,18 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
             </div>
           ))
         )}
+      </div>
+
+      {/* Pagination Bar */}
+      <div className="glass-panel" style={{ padding: '12px 24px' }}>
+        <Pagination
+          currentPage={page}
+          pageSize={pageSize}
+          totalItems={strategies.length >= pageSize ? (page + 2) * pageSize : (page * pageSize) + strategies.length}
+          onPageChange={(newPage) => setPage(newPage)}
+          onPageSizeChange={(newSize) => { setPageSize(newSize); setPage(0); }}
+          pageSizeOptions={[3, 6, 12, 24]}
+        />
       </div>
     </div>
   );

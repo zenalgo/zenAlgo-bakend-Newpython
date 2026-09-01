@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { CreditCard, Check, Plus, ShieldCheck, RefreshCw, Zap, Users, Trash2 } from 'lucide-react';
+import { CreditCard, Check, Plus, ShieldCheck, RefreshCw, Zap, Users, Trash2, Search, Filter } from 'lucide-react';
 import { plansApi } from '../../api/plansApi';
 import { Modal } from '../common/Modal';
+import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
 
 export const SubscriptionPlansPage = () => {
@@ -9,6 +10,12 @@ export const SubscriptionPlansPage = () => {
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // Filters & Pagination
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('ALL');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(6);
 
   // Form State
   const [code, setCode] = useState('');
@@ -25,7 +32,13 @@ export const SubscriptionPlansPage = () => {
   const loadPlans = async () => {
     setLoading(true);
     try {
-      const res = await plansApi.getPublicPlans();
+      const params = {
+        page,
+        size: pageSize,
+        search: search || undefined,
+        subscription_type: typeFilter !== 'ALL' ? typeFilter : undefined,
+      };
+      const res = await plansApi.getPublicPlans(params);
       setPlans(res.data || []);
     } catch (err) {
       console.error(err);
@@ -37,7 +50,15 @@ export const SubscriptionPlansPage = () => {
 
   useEffect(() => {
     loadPlans();
-  }, []);
+  }, [page, pageSize, typeFilter]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setPage(0);
+      loadPlans();
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   const handleNameChange = (e) => {
     const val = e.target.value;
@@ -82,7 +103,7 @@ export const SubscriptionPlansPage = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Subscription Tier Plans</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
@@ -101,6 +122,36 @@ export const SubscriptionPlansPage = () => {
         </div>
       </div>
 
+      {/* Search & Filter Toolbar */}
+      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '240px', maxWidth: '400px' }}>
+          <Search size={18} color="var(--text-dim)" />
+          <input
+            type="text"
+            placeholder="Search plans by name or code..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input-field"
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Filter size={14} color="var(--text-dim)" />
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Billing Cycle:</span>
+          <select
+            value={typeFilter}
+            onChange={(e) => { setTypeFilter(e.target.value); setPage(0); }}
+            className="input-field"
+            style={{ width: '140px', padding: '6px 10px' }}
+          >
+            <option value="ALL">All Periods</option>
+            <option value="MONTHLY">MONTHLY</option>
+            <option value="QUARTERLY">QUARTERLY</option>
+            <option value="ANNUAL">ANNUAL</option>
+          </select>
+        </div>
+      </div>
+
       {/* Plans Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
         {loading ? (
@@ -109,7 +160,7 @@ export const SubscriptionPlansPage = () => {
           </div>
         ) : plans.length === 0 ? (
           <div className="glass-panel" style={{ padding: '40px', textAlign: 'center', gridColumn: '1 / -1', color: 'var(--text-muted)' }}>
-            No subscription plans found. Click <strong>"+ Create New Tier Plan"</strong> to add pricing tiers.
+            No subscription plans found matching filters. Click <strong>"+ Create New Tier Plan"</strong> to add pricing tiers.
           </div>
         ) : (
           plans.map((p) => {
@@ -195,6 +246,18 @@ export const SubscriptionPlansPage = () => {
             );
           })
         )}
+      </div>
+
+      {/* Pagination Bar */}
+      <div className="glass-panel" style={{ padding: '12px 24px' }}>
+        <Pagination
+          currentPage={page}
+          pageSize={pageSize}
+          totalItems={plans.length >= pageSize ? (page + 2) * pageSize : (page * pageSize) + plans.length}
+          onPageChange={(newPage) => setPage(newPage)}
+          onPageSizeChange={(newSize) => { setPageSize(newSize); setPage(0); }}
+          pageSizeOptions={[3, 6, 12]}
+        />
       </div>
 
       {/* Create Plan Modal */}

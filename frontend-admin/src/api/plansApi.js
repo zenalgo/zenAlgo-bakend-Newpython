@@ -1,8 +1,8 @@
 import axiosClient from './axiosClient';
 
 export const plansApi = {
-  getPublicPlans: () =>
-    axiosClient.get('/admin/plans'),
+  getPublicPlans: (params) =>
+    axiosClient.get('/admin/plans', { params }),
 
   getMySubscription: () =>
     axiosClient.get('/subscriptions/me'),

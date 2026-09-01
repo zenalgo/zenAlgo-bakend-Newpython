@@ -1,8 +1,8 @@
 import axiosClient from './axiosClient';
 
 export const usersApi = {
-  getUsers: () =>
-    axiosClient.get('/admin/users'),
+  getUsers: (params) =>
+    axiosClient.get('/admin/users', { params }),
 
   provisionUser: (userData) =>
     axiosClient.post('/admin/users', userData),

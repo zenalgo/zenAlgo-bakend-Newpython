@@ -501,11 +501,16 @@ async def get_strategy_by_id_admin(
 async def list_strategies_admin(
     request: Request,
     page: int = Query(0, ge=0),
-    size: int = Query(10, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    mode: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await StrategyService.list_strategies(db, current_admin.id, page, size)
+    res = await StrategyService.list_strategies(
+        db, user_id=current_admin.id, page=page, size=size, search=search, mode=mode, status=status, is_admin=True
+    )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
