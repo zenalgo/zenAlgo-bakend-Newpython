@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_trader
-from app.core.responses import ApiResponse
+from app.core.schemas import ApiResponse
 from app.users.models import User
 from app.partners.schemas import (
     PartnerDashboardStatsResponse,

@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 import uuid
 
 from app.users.models import User
-from app.wallets.models import Wallet, Transaction, TransactionType, TransactionStatus
-from app.subscriptions.models import UserSubscription, Plan
+from app.wallets.models import Wallet, WalletTransaction
+from app.subscriptions.models import Subscription, Plan
 from app.partners.schemas import (
     PartnerDashboardStatsResponse,
     ReferredClientResponse,
@@ -32,9 +32,9 @@ class PartnerService:
         ref_ids = [u.id for u in referred_users]
         active_subscribers = 0
         if ref_ids:
-            stmt_active_subs = select(func.count(UserSubscription.id)).where(
-                UserSubscription.user_id.in_(ref_ids),
-                UserSubscription.status == "ACTIVE"
+            stmt_active_subs = select(func.count(Subscription.id)).where(
+                Subscription.user_id.in_(ref_ids),
+                Subscription.status == "ACTIVE"
             )
             res_active = await db.execute(stmt_active_subs)
             active_subscribers = res_active.scalar() or 0
