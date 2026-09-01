@@ -205,29 +205,51 @@ class AIService:
 
     @staticmethod
     def _call_gemini(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
-        """Calls Google Gemini GenerateContent API with multi-model and multi-version fallbacks."""
-        # Candidate models to try in sequence if one returns 404
+        """Calls Google Gemini GenerateContent API with dynamic model discovery and fallback."""
+        discovered_models = []
+
+        # 1. Dynamically query available models for this specific API key
+        try:
+            list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            req_list = urllib.request.Request(list_url, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req_list, timeout=10) as resp_list:
+                m_data = json.loads(resp_list.read().decode("utf-8"))
+                for m in m_data.get("models", []):
+                    methods = m.get("supportedGenerationMethods", [])
+                    if "generateContent" in methods:
+                        m_name = m.get("name", "")  # E.g. "models/gemini-1.5-flash"
+                        if m_name:
+                            discovered_models.append(m_name)
+        except Exception:
+            pass
+
+        # Candidate models to try in sequence
         candidates = []
-        if model:
-            candidates.append((model, "v1beta"))
-            candidates.append((model, "v1"))
-        
-        candidates.extend([
-            ("gemini-1.5-flash", "v1beta"),
-            ("gemini-1.5-flash-latest", "v1beta"),
-            ("gemini-2.0-flash", "v1beta"),
-            ("gemini-1.5-pro", "v1beta"),
-            ("gemini-pro", "v1beta"),
-            ("gemini-1.5-flash", "v1"),
-            ("gemini-pro", "v1"),
-        ])
+        # If models were discovered dynamically, prioritize them first:
+        for dm in discovered_models:
+            candidates.append((dm, "v1beta", True))
+
+        # Fallback names
+        fallback_names = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-2.0-flash",
+            "models/gemini-1.5-pro",
+            "models/gemini-pro",
+            "models/gemini-1.0-pro"
+        ]
+        for fn in fallback_names:
+            if fn not in [c[0] for c in candidates]:
+                candidates.append((fn, "v1beta", False))
+                candidates.append((fn, "v1", False))
 
         last_error = None
 
-        for model_name, api_ver in candidates:
-            url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model_name}:generateContent?key={api_key}"
+        for model_path, api_ver, is_full_path in candidates:
+            # If model_path already starts with 'models/', construct URL properly
+            clean_model = model_path if model_path.startswith("models/") else f"models/{model_path}"
+            url = f"https://generativelanguage.googleapis.com/{api_ver}/{clean_model}:generateContent?key={api_key}"
             
-            # Payload with clear system instruction and prompt
             payload = {
                 "contents": [
                     {
@@ -267,9 +289,9 @@ class AIService:
                     return json.loads(clean_text)
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8")
-                last_error = f"Gemini Error ({e.code}) on {model_name} ({api_ver}): {err_body}"
-                if e.code == 404:
-                    # Model not found on this version, try next candidate
+                last_error = f"Gemini Error ({e.code}) on {clean_model} ({api_ver}): {err_body}"
+                if e.code in [404, 400]:
+                    # Model not supported on this version, try next candidate
                     continue
                 else:
                     raise ValidationError(last_error)
@@ -277,7 +299,7 @@ class AIService:
                 last_error = str(e)
                 continue
 
-        raise ValidationError(last_error or "Failed to connect to Google Gemini API with provided key.")
+        raise ValidationError(last_error or "Failed to connect to Google Gemini API with provided key. Please check your API key.")
 
     @staticmethod
     def _call_claude(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
