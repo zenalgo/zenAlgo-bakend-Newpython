@@ -7,9 +7,19 @@ export const walletsApi = {
   getTransactions: () =>
     axiosClient.get('/wallets/me/transactions'),
 
-  deposit: (amount, referenceId, remarks) =>
-    axiosClient.post('/wallets/me/deposit', { amount, referenceId, remarks }),
+  deposit: (amount, referenceId, description) =>
+    axiosClient.post('/wallets/me/deposit', {
+      amount,
+      referenceId,
+      description,
+      referenceType: 'BANK_TRANSFER',
+    }),
 
-  withdraw: (amount, remarks) =>
-    axiosClient.post('/wallets/me/withdraw', { amount, remarks }),
+  withdraw: (amount, referenceId, description) =>
+    axiosClient.post('/wallets/me/withdraw', {
+      amount,
+      referenceId,
+      description,
+      referenceType: 'BANK_TRANSFER',
+    }),
 };

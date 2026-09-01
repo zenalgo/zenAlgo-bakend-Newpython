@@ -60,6 +60,7 @@ async def deposit(
         reference_id=body.referenceId,
         idempotency_key=body.idempotencyKey
     )
+    await db.commit()
     tx_dto = WalletTransactionDto.model_validate(tx)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
@@ -86,6 +87,7 @@ async def withdraw(
         reference_id=body.referenceId,
         idempotency_key=body.idempotencyKey
     )
+    await db.commit()
     tx_dto = WalletTransactionDto.model_validate(tx)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
