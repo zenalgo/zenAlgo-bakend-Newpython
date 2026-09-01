@@ -31,6 +31,18 @@ async def seed_initial_users():
                 "password": "password123",
                 "role": UserRole.TRADER,
                 "referral": "REF-TRADER01"
+            },
+            {
+                "email": "partner@trading.com",
+                "password": "partner123",
+                "role": UserRole.PARTNER,
+                "referral": "REF-PARTNER77"
+            },
+            {
+                "email": "user@trading.com",
+                "password": "user123",
+                "role": UserRole.USER,
+                "referral": "REF-CLIENT01"
             }
         ]
 
