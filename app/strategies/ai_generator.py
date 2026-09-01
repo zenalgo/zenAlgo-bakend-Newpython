@@ -57,21 +57,31 @@ Return ONLY raw valid JSON. Do not include markdown ticks or explanations outsid
 SUPPORTED_INDICATORS = {
     "EMA": r"EMA\s*\(\s*(\d+)\s*,\s*([A-Za-z]+)\s*\)",
     "SMA": r"SMA\s*\(\s*(\d+)\s*,\s*([A-Za-z]+)\s*\)",
+    "WMA": r"WMA\s*\(\s*(\d+)\s*,\s*([A-Za-z]+)\s*\)",
     "RSI": r"RSI\s*\(\s*(\d+)\s*,\s*([A-Za-z]+)\s*\)",
     "SUPERTREND": r"SUPERTREND\s*\(\s*(\d+)\s*,\s*([\d\.]+)\s*\)",
     "MACD": r"MACD\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([A-Za-z]+)\s*\)",
     "VWAP": r"VWAP\s*\(\s*\)",
     "ATR": r"ATR\s*\(\s*(\d+)\s*\)",
+    "BOLLINGER_UPPER": r"BOLLINGER_UPPER\s*\(\s*(\d+)\s*,\s*([\d\.]+)\s*\)",
+    "BOLLINGER_LOWER": r"BOLLINGER_LOWER\s*\(\s*(\d+)\s*,\s*([\d\.]+)\s*\)",
+    "STOCHASTIC": r"STOCHASTIC\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)",
+    "HIGHEST": r"HIGHEST\s*\(\s*([A-Za-z]+)\s*,\s*(\d+)\s*\)",
+    "LOWEST": r"LOWEST\s*\(\s*([A-Za-z]+)\s*,\s*(\d+)\s*\)",
 }
+
+KNOWN_FUNCTIONS = set(SUPPORTED_INDICATORS.keys()).union({"AND", "OR", "NOT", "MAX", "MIN", "ABS", "ROUND", "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME"})
 
 def validate_indicator_and_calculation_fields(strategy_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Rigorously audits that all indicators, math expressions, and calculation fields
     required for live execution are valid, calculable, and properly formed.
+    Flags any unsupported indicators that the backend execution engine cannot compute.
     """
     audit_results = {
         "valid": True,
         "indicatorsDetected": [],
+        "unsupportedIndicators": [],
         "entryRulesVerified": [],
         "exitRulesVerified": [],
         "legsVerified": [],
@@ -87,20 +97,34 @@ def validate_indicator_and_calculation_fields(strategy_dict: Dict[str, Any]) -> 
         audit_results["valid"] = False
 
     detected_inds = set()
+    unsupported_inds = set()
+
     for rule in entry_rules:
         rule_str = str(rule)
         matched_indicators = []
 
+        # Find supported indicators
         for ind_name, pattern in SUPPORTED_INDICATORS.items():
             matches = re.findall(pattern, rule_str, re.IGNORECASE)
             if matches:
                 detected_inds.add(ind_name)
                 matched_indicators.append(f"{ind_name}")
 
+        # Detect any unknown/unsupported function calls
+        func_calls = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", rule_str)
+        for fn in func_calls:
+            fn_upper = fn.upper()
+            if fn_upper not in KNOWN_FUNCTIONS:
+                unsupported_inds.add(fn_upper)
+                audit_results["warnings"].append(
+                    f"Unsupported Calculation: '{fn_upper}()' is not calculable by ZenAlgo execution engine. Supported indicators: {', '.join(sorted(SUPPORTED_INDICATORS.keys()))}."
+                )
+                audit_results["valid"] = False
+
         audit_results["entryRulesVerified"].append({
             "rule": rule_str,
             "indicators": matched_indicators,
-            "syntax": "VALID"
+            "syntax": "VALID" if not unsupported_inds else "UNSUPPORTED_METHOD"
         })
 
     # 2. Audit Exit Rules
@@ -114,17 +138,31 @@ def validate_indicator_and_calculation_fields(strategy_dict: Dict[str, Any]) -> 
                 detected_inds.add(ind_name)
                 matched_indicators.append(f"{ind_name}")
 
+        func_calls = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", rule_str)
+        for fn in func_calls:
+            fn_upper = fn.upper()
+            if fn_upper not in KNOWN_FUNCTIONS:
+                unsupported_inds.add(fn_upper)
+                audit_results["warnings"].append(
+                    f"Unsupported Calculation: '{fn_upper}()' is not calculable by ZenAlgo execution engine."
+                )
+                audit_results["valid"] = False
+
         audit_results["exitRulesVerified"].append({
             "rule": rule_str,
             "indicators": matched_indicators,
-            "syntax": "VALID"
+            "syntax": "VALID" if not unsupported_inds else "UNSUPPORTED_METHOD"
         })
 
     audit_results["indicatorsDetected"] = list(detected_inds)
-    if detected_inds:
-        audit_results["checksPassed"].append(f"Verified {len(detected_inds)} mathematical indicators ({', '.join(detected_inds)})")
+    audit_results["unsupportedIndicators"] = list(unsupported_inds)
+
+    if unsupported_inds:
+        audit_results["valid"] = False
+    elif detected_inds:
+        audit_results["checksPassed"].append(f"Verified {len(detected_inds)} calculable mathematical indicators: {', '.join(detected_inds)}")
     else:
-        audit_results["checksPassed"].append("Price action breakout logic verified")
+        audit_results["checksPassed"].append("Price action breakout calculation logic verified")
 
     # 3. Audit Contract Legs & Risk Calculation
     legs = strategy_dict.get("legs", [])

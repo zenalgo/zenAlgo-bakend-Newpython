@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '../common/Modal';
-import { Sparkles, Bot, Key, CheckCircle2, AlertTriangle, Play, Save, Eye, EyeOff, Zap, ShieldCheck, Layers, ArrowRight } from 'lucide-react';
+import { Sparkles, Bot, Key, CheckCircle2, AlertTriangle, XCircle, Play, Save, Eye, EyeOff, Zap, ShieldCheck, Layers, ArrowRight } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -60,7 +60,11 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
       const data = res.data;
       setGeneratedStrategy(data.strategy);
       setIndicatorAudit(data.indicatorAudit);
-      addToast(`AI Strategy "${data.strategy.name}" generated & verified!`, 'success');
+      if (data.indicatorAudit?.valid) {
+        addToast(`AI Strategy "${data.strategy.name}" generated & verified!`, 'success');
+      } else {
+        addToast('Unsupported indicators detected in generated strategy.', 'warning');
+      }
     } catch (err) {
       console.error(err);
       addToast(err.message || 'AI Strategy Generation failed', 'error');
@@ -70,7 +74,7 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
   };
 
   const handleSaveToFleet = async () => {
-    if (!generatedStrategy) return;
+    if (!generatedStrategy || !indicatorAudit?.valid) return;
     setSaving(true);
     try {
       const payload = {
@@ -149,6 +153,8 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
     );
   }
 
+  const isValidAudit = indicatorAudit?.valid !== false;
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="🤖 Multi-Model AI Strategy Generator">
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxHeight: '80vh', overflowY: 'auto' }}>
@@ -196,7 +202,7 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
             >
               <span style={{ fontSize: '1.2rem' }}>🔵</span>
               <strong style={{ color: '#fff', fontSize: '0.9rem' }}>Google Gemini</strong>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Gemini 1.5 Pro / Flash</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Auto-Discovered Models</span>
             </button>
 
             <button
@@ -319,7 +325,7 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
         {indicatorAudit && generatedStrategy && (
           <div style={{
             background: 'rgba(15, 23, 42, 0.8)',
-            border: '1px solid var(--accent-emerald)',
+            border: `1px solid ${isValidAudit ? 'var(--accent-emerald)' : 'var(--accent-rose)'}`,
             borderRadius: '8px',
             padding: '16px',
             display: 'flex',
@@ -328,13 +334,42 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <ShieldCheck size={20} color="var(--accent-emerald)" />
+                {isValidAudit ? (
+                  <ShieldCheck size={20} color="var(--accent-emerald)" />
+                ) : (
+                  <XCircle size={20} color="var(--accent-rose)" />
+                )}
                 <h4 style={{ fontSize: '1rem', fontWeight: 800, color: '#fff', margin: 0 }}>
-                  Pre-Save Mathematical & Indicator Audit: PASSED
+                  {isValidAudit ? 'Pre-Save Mathematical & Indicator Audit: PASSED' : 'Pre-Save Audit: UNSUPPORTED CALCULATION DETECTED'}
                 </h4>
               </div>
-              <span className="badge badge-running">VERIFIED CALCULATIONS</span>
+              <span className={`badge ${isValidAudit ? 'badge-running' : 'badge-failed'}`}>
+                {isValidAudit ? 'VERIFIED CALCULATIONS' : 'UNSUPPORTED METHOD'}
+              </span>
             </div>
+
+            {/* Warnings if any unsupported indicators exist */}
+            {indicatorAudit.warnings && indicatorAudit.warnings.length > 0 && (
+              <div style={{
+                background: 'rgba(244, 63, 94, 0.1)',
+                border: '1px solid rgba(244, 63, 94, 0.3)',
+                borderRadius: '6px',
+                padding: '10px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                fontSize: '0.85rem',
+                color: 'var(--accent-rose)',
+              }}>
+                <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <AlertTriangle size={14} />
+                  <span>Execution Engine Warning:</span>
+                </div>
+                {indicatorAudit.warnings.map((w, idx) => (
+                  <div key={idx}>• {w}</div>
+                ))}
+              </div>
+            )}
 
             {/* Verification Checklist */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.85rem' }}>
@@ -381,12 +416,17 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
               <button
                 type="button"
                 onClick={handleSaveToFleet}
-                disabled={saving}
-                className="btn btn-emerald"
-                style={{ justifyContent: 'center' }}
+                disabled={saving || !isValidAudit}
+                className={`btn ${isValidAudit ? 'btn-emerald' : 'btn-secondary'}`}
+                style={{
+                  justifyContent: 'center',
+                  opacity: !isValidAudit ? 0.5 : 1,
+                  cursor: !isValidAudit ? 'not-allowed' : 'pointer',
+                }}
+                title={!isValidAudit ? 'Cannot save strategy with unsupported calculations' : 'Save Strategy to Fleet'}
               >
                 <Save size={16} />
-                <span>{saving ? 'Saving to Fleet...' : '⚡ Auto-Fill & Save Strategy'}</span>
+                <span>{saving ? 'Saving to Fleet...' : isValidAudit ? '⚡ Auto-Fill & Save Strategy' : '❌ Fix Unsupported Method First'}</span>
               </button>
             </div>
           </div>
