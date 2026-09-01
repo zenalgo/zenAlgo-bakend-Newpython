@@ -21,10 +21,16 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
   const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
+    if (selectedStrategyId) {
+      setCurrentStrategyId(selectedStrategyId);
+    }
+  }, [selectedStrategyId]);
+
+  useEffect(() => {
     strategyApi.getStrategies().then((res) => {
       const list = res.data || [];
       setStrategies(list);
-      if (!currentStrategyId && list.length > 0) {
+      if (!currentStrategyId && !selectedStrategyId && list.length > 0) {
         setCurrentStrategyId(list[0].id);
       }
     });
@@ -80,10 +86,10 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
 
   const handleSquareOff = async () => {
     if (!currentStrategyId) return;
-    if (!window.confirm('Are you sure you want to trigger market square-off for this strategy?')) return;
+    if (!window.confirm(`Are you sure you want to trigger market square-off for Strategy #${currentStrategyId}?`)) return;
     try {
       await strategyApi.squareOff(currentStrategyId);
-      addToast('Square-off orders dispatched!', 'success');
+      addToast(`Strategy #${currentStrategyId} squared off successfully!`, 'success');
       loadOrders();
     } catch (err) {
       addToast(err.message || 'Square-off failed', 'error');

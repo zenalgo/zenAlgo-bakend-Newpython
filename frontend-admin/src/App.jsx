@@ -31,8 +31,15 @@ export const App = () => {
       case 'strategies':
         return (
           <StrategyListPage
-            onNavigate={setCurrentTab}
-            onSelectStrategy={(id) => setSelectedStrategyId(id)}
+            onNavigateToBuilder={() => setCurrentTab('builder')}
+            onNavigateToOrders={(stratId) => {
+              setSelectedStrategyId(stratId);
+              setCurrentTab('placed-orders');
+            }}
+            onNavigateToBatches={(stratId) => {
+              setSelectedStrategyId(stratId);
+              setCurrentTab('batches');
+            }}
           />
         );
       case 'builder':

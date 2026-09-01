@@ -33,10 +33,16 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
   const subscriberSectionRef = useRef(null);
 
   useEffect(() => {
+    if (selectedStrategyId) {
+      setCurrentStrategyId(selectedStrategyId);
+    }
+  }, [selectedStrategyId]);
+
+  useEffect(() => {
     strategyApi.getStrategies().then((res) => {
       const list = res.data || [];
       setStrategies(list);
-      if (!currentStrategyId && list.length > 0) {
+      if (!currentStrategyId && !selectedStrategyId && list.length > 0) {
         setCurrentStrategyId(list[0].id);
       }
     });

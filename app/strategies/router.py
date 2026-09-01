@@ -571,6 +571,50 @@ async def activate_live_admin(
         requestId=request_id
     )
 
+@router.post("/strategies/{id}/squareoff", response_model=ApiResponse[StrategyResponse])
+@router.post("/admin/strategies/{id}/squareoff", response_model=ApiResponse[StrategyResponse])
+async def squareoff_strategy_endpoint(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from datetime import datetime, timezone
+    from app.strategies.models import Strategy, StrategyExecution
+
+    stmt = select(Strategy).where(Strategy.id == id)
+    res = await db.execute(stmt)
+    strat = res.scalar_one_or_none()
+    if not strat:
+        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
+
+    strat.status = "SQUARED_OFF"
+    db.add(strat)
+
+    now_utc = datetime.now(timezone.utc)
+    exec_stmt = select(StrategyExecution).where(
+        StrategyExecution.strategy_id == id,
+        StrategyExecution.status.in_(["RUNNING", "PENDING", "OPEN"])
+    )
+    exec_res = await db.execute(exec_stmt)
+    for ex in exec_res.scalars().all():
+        ex.status = "SQUARED_OFF"
+        ex.exit_time = now_utc
+        if ex.unrealized_pnl:
+            ex.realized_pnl = ex.unrealized_pnl
+        ex.execution_logs = (ex.execution_logs or "") + f" | Emergency square-off at {now_utc.strftime('%H:%M:%S')}"
+        db.add(ex)
+
+    await db.commit()
+    strat_dto = await build_strategy_response(db, strat)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message=f"Strategy #{id} squared off successfully. All active positions closed.",
+        data=strat_dto,
+        requestId=request_id
+    )
+
 strategy_api_router = APIRouter(prefix="/api/strategy", tags=["Strategy Builder API Compatibility"])
 
 @strategy_api_router.post("", response_model=ApiResponse[StrategyResponse], status_code=status.HTTP_201_CREATED)
