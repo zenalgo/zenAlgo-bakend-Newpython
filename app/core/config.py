@@ -1,6 +1,7 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from typing import Optional
 
 class Settings(BaseSettings):
     APP_ENV: str = "local"
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     # Dhan Broker API Configuration
     DHAN_API_BASE_URL: str = Field(default="https://api.dhan.co/v2")
     DHAN_SANDBOX_MODE: bool = Field(default=True)
+
+    # LLM Fallsback Configuration
+    GEMINI_API_KEY: Optional[str] = Field(default=None)
+    OPENAI_API_KEY: Optional[str] = Field(default=None)
 
     model_config = SettingsConfigDict(
 

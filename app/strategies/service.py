@@ -1,8 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, exists
-from typing import List, Optional
+from typing import List, Optional, Union
 from decimal import Decimal
+import json
+import datetime
+import re
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.users.models import User
@@ -10,70 +13,201 @@ from app.strategies.models import (
     Strategy, StrategyVersion, StrategyLeg,
     StrategyEntrySetting, StrategyEntryDay, StrategyExitSetting, StrategyExecution
 )
-from app.strategies.schemas import StrategyRequest, StrategyResponse, StrategyLegResponse, StrategyEntrySettingResponse, StrategyExitSettingResponse
+from app.strategies.schemas import (
+    StrategyRequest, StrategyResponse, StrategyLegResponse, 
+    StrategyEntrySettingResponse, StrategyExitSettingResponse, 
+    StrategyMeta, InstrumentConfig, ScheduleConfig, 
+    RiskManagementConfig, TargetConfig, StrategyValidationResponse,
+    StrategyValidationError, TargetParameter, RiskParameter,
+    StrategyEntrySettingRequest, StrategyExitSettingRequest, StrategyLegRequest
+)
+from app.strategies.rules.rule_schema import StrategyRule, ParsedRule
+from app.strategies.rules.rule_validator import validate_strategy_rule
+from app.strategies.rules.rule_normalizer import normalize_parsed_rule
+from app.strategies.rules.rule_explainer import explain_parsed_rule
+from app.strategies.parser.deterministic_parser import parse_logical_expression, parse_deterministic_rule
+from app.strategies.versioning.version_service import VersionService
+from app.strategies.repository import StrategyRepository
+from app.strategies.state_manager import StrategyStateManager
+from app.core.exceptions import ValidationError, ResourceNotFoundError
 from app.strategies.validator import validate_strategy_request
-from app.core.exceptions import ValidationError, ResourceNotFoundError, AuthorizationError
 
-async def map_version_to_response_dict(version: StrategyVersion) -> dict:
-    """Helper to convert active version configuration relationships to dict fields."""
-    legs = []
-    for leg in version.legs:
-        legs.append({
-            "id": leg.id,
-            "sequence": leg.sequence,
-            "segment": leg.segment,
-            "side": leg.side,
-            "strikeSelection": leg.strike_selection,
-            "strikeValue": leg.strike_value,
-            "expiry": leg.expiry,
-            "lots": leg.lots,
-            "targetType": leg.target_type,
-            "targetValue": leg.target_value,
-            "stopLossType": leg.stop_loss_type,
-            "stopLossValue": leg.stop_loss_value,
-            "trailingSlEnabled": leg.trailing_sl_enabled,
-            "trailingSlActivateType": leg.trailing_sl_activate_type,
-            "trailingSlActivateValue": leg.trailing_sl_activate_value,
-            "trailingSlIncreaseBy": leg.trailing_sl_increase_by,
-            "trailingSlBy": leg.trailing_sl_by
-        })
-
-    entry_setting = {
-        "entryTime": version.entry_setting.entry_time if version.entry_setting else "09:15"
+def serialize_builder_fields(request: StrategyRequest) -> str:
+    """Serializes all Strategy Builder specific parameters to JSON."""
+    data = {
+        "schemaVersion": request.schemaVersion or "2.0.0",
+        "description": request.description or "",
+        "youtubeUrl": request.youtubeUrl or "",
+        "coreIdea": request.coreIdea or "",
+        "category": request.category or "",
+        "marketBias": request.marketBias or "BULLISH",
+        "timeframe": request.timeframe or "15m",
+        "meta": request.meta.model_dump(by_alias=True) if request.meta else {},
+        "instrument": request.instrument.model_dump(by_alias=True) if request.instrument else {},
+        "schedule": request.schedule.model_dump(by_alias=True) if request.schedule else {},
+        "riskManagement": request.riskManagement.model_dump(by_alias=True) if request.riskManagement else {},
+        "target": request.target.model_dump(by_alias=True) if request.target else {},
+        "scriptExecutionPayload": request.scriptExecutionPayload or {},
     }
 
-    entry_days = [day.day_of_week for day in version.entry_days]
+    # Normalize and serialize entry conditions
+    if request.entryConditions is not None:
+        serialized_entries = []
+        for cond in request.entryConditions:
+            if isinstance(cond, str):
+                parsed = parse_logical_expression(cond, default_timeframe=request.timeframe or "15m")
+                rule_obj = StrategyRule(rawText=cond, parsedRule=parsed)
+                serialized_entries.append(rule_obj.model_dump(by_alias=True))
+            elif isinstance(cond, StrategyRule):
+                serialized_entries.append(cond.model_dump(by_alias=True))
+            elif isinstance(cond, dict):
+                serialized_entries.append(cond)
+        data["entryConditions"] = serialized_entries
 
-    exit_setting = {
-        "profitMtmType": version.exit_setting.profit_mtm_type if version.exit_setting else "NONE",
-        "profitMtmValue": version.exit_setting.profit_mtm_value if version.exit_setting else None,
-        "stopLossMtmType": version.exit_setting.stop_loss_mtm_type if version.exit_setting else "NONE",
-        "stopLossMtmValue": version.exit_setting.stop_loss_mtm_value if version.exit_setting else None,
-        "exitTime": version.exit_setting.exit_time if version.exit_setting else "15:15",
-        "exitOnExpiry": version.exit_setting.exit_on_expiry if version.exit_setting else True,
-        "exitAfterEntryType": version.exit_setting.exit_after_entry_type if version.exit_setting else "NONE",
-        "exitAfterEntryValue": version.exit_setting.exit_after_entry_value if version.exit_setting else None
+    # Normalize and serialize exit conditions
+    if request.exitConditions is not None:
+        serialized_exits = []
+        for cond in request.exitConditions:
+            if isinstance(cond, str):
+                parsed = parse_logical_expression(cond, default_timeframe=request.timeframe or "15m")
+                rule_obj = StrategyRule(rawText=cond, parsedRule=parsed)
+                serialized_exits.append(rule_obj.model_dump(by_alias=True))
+            elif isinstance(cond, StrategyRule):
+                serialized_exits.append(cond.model_dump(by_alias=True))
+            elif isinstance(cond, dict):
+                serialized_exits.append(cond)
+        data["exitConditions"] = serialized_exits
+
+    # Key Remember Points
+    if request.keyRememberPoints is not None:
+        serialized_keys = []
+        for cond in request.keyRememberPoints:
+            if isinstance(cond, str):
+                parsed = parse_logical_expression(cond, default_timeframe=request.timeframe or "15m")
+                rule_obj = StrategyRule(rawText=cond, parsedRule=parsed)
+                serialized_keys.append(rule_obj.model_dump(by_alias=True))
+            elif isinstance(cond, StrategyRule):
+                serialized_keys.append(cond.model_dump(by_alias=True))
+            elif isinstance(cond, dict):
+                serialized_keys.append(cond)
+        data["keyRememberPoints"] = serialized_keys
+
+    # Golden Rules
+    if request.goldenRules is not None:
+        serialized_golden = []
+        for cond in request.goldenRules:
+            if isinstance(cond, str):
+                from app.strategies.parser.golden_rule_parser import parse_golden_rule
+                res = parse_golden_rule(cond, default_timeframe=request.timeframe or "15m")
+                if res.parsed_rule:
+                    res.parsed_rule.mandatory = True
+                rule_obj = StrategyRule(rawText=cond, parsedRule=res.parsed_rule)
+                serialized_golden.append(rule_obj.model_dump(by_alias=True))
+            elif isinstance(cond, StrategyRule):
+                serialized_golden.append(cond.model_dump(by_alias=True))
+            elif isinstance(cond, dict):
+                serialized_golden.append(cond)
+        data["goldenRules"] = serialized_golden
+
+    return json.dumps(data)
+
+def load_builder_fields(strategy: Strategy) -> dict:
+    """Loads and deserializes strategy builder specific parameters from parameters JSON."""
+    defaults = {
+        "schemaVersion": "2.0.0",
+        "description": "",
+        "youtubeUrl": "",
+        "coreIdea": "",
+        "category": "",
+        "marketBias": "BULLISH",
+        "timeframe": "15m",
+        "meta": None,
+        "instrument": None,
+        "schedule": None,
+        "entryConditions": [],
+        "exitConditions": [],
+        "keyRememberPoints": [],
+        "riskManagement": None,
+        "target": None,
+        "scriptExecutionPayload": None
     }
+    if not strategy.parameters:
+        return defaults
+    try:
+        data = json.loads(strategy.parameters)
+    except Exception:
+        return defaults
+
+    tf = data.get("timeframe", "15m")
+
+    # Map conditions back to StrategyRule objects
+    raw_entries = data.get("entryConditions", [])
+    entry_conditions = []
+    for cond in raw_entries:
+        if isinstance(cond, str):
+            parsed = parse_logical_expression(cond, default_timeframe=tf)
+            entry_conditions.append(StrategyRule(rawText=cond, parsedRule=parsed))
+        elif isinstance(cond, dict):
+            entry_conditions.append(StrategyRule.model_validate(cond))
+
+    raw_exits = data.get("exitConditions", [])
+    exit_conditions = []
+    for cond in raw_exits:
+        if isinstance(cond, str):
+            parsed = parse_logical_expression(cond, default_timeframe=tf)
+            exit_conditions.append(StrategyRule(rawText=cond, parsedRule=parsed))
+        elif isinstance(cond, dict):
+            exit_conditions.append(StrategyRule.model_validate(cond))
+
+    raw_keys = data.get("keyRememberPoints", [])
+    key_remember_points = []
+    for cond in raw_keys:
+        if isinstance(cond, str):
+            parsed = parse_logical_expression(cond, default_timeframe=tf)
+            key_remember_points.append(StrategyRule(rawText=cond, parsedRule=parsed))
+        elif isinstance(cond, dict):
+            key_remember_points.append(StrategyRule.model_validate(cond))
+
+    raw_golden = data.get("goldenRules", [])
+    golden_rules = []
+    for cond in raw_golden:
+        if isinstance(cond, str):
+            from app.strategies.parser.golden_rule_parser import parse_golden_rule
+            res = parse_golden_rule(cond, default_timeframe=tf)
+            if res.parsed_rule:
+                res.parsed_rule.mandatory = True
+            golden_rules.append(StrategyRule(rawText=cond, parsedRule=res.parsed_rule))
+        elif isinstance(cond, dict):
+            golden_rules.append(StrategyRule.model_validate(cond))
 
     return {
-        "versionNumber": version.version_number,
-        "underlying": version.underlying,
-        "capital": version.capital,
-        "tradingType": version.trading_type,
-        "legs": legs,
-        "entrySetting": entry_setting,
-        "entryDays": entry_days,
-        "exitSetting": exit_setting
+        "schemaVersion": data.get("schemaVersion", "2.0.0"),
+        "description": data.get("description", ""),
+        "youtubeUrl": data.get("youtubeUrl", ""),
+        "coreIdea": data.get("coreIdea", ""),
+        "category": data.get("category", ""),
+        "marketBias": data.get("marketBias", "BULLISH"),
+        "timeframe": tf,
+        "meta": StrategyMeta.model_validate(data["meta"]) if data.get("meta") else None,
+        "instrument": InstrumentConfig.model_validate(data["instrument"]) if data.get("instrument") else None,
+        "schedule": ScheduleConfig.model_validate(data["schedule"]) if data.get("schedule") else None,
+        "entryConditions": entry_conditions,
+        "exitConditions": exit_conditions,
+        "goldenRules": golden_rules,
+        "keyRememberPoints": key_remember_points,
+        "riskManagement": RiskManagementConfig.model_validate(data["riskManagement"]) if data.get("riskManagement") else None,
+        "target": TargetConfig.model_validate(data["target"]) if data.get("target") else None,
+        "scriptExecutionPayload": data.get("scriptExecutionPayload"),
     }
 
 async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> StrategyResponse:
-    """Loads current version relationships and maps Strategy to StrategyResponse DTO."""
-    # Eager load version
+    """Loads active version and formats response JSON."""
     stmt = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
     res = await db.execute(stmt)
     version = res.scalar_one_or_none()
 
     if not version:
+        # Default fallback
         return StrategyResponse(
             id=strategy.id,
             userId=strategy.user_id,
@@ -88,10 +222,11 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
             legs=[],
             entrySetting={"entryTime": "09:15"},
             entryDays=[],
-            exitSetting={"entryTime": "15:15"}
+            exitSetting={"exitTime": "15:15"},
+            scriptExecutionPayload=None
         )
 
-    # Resolve relationships using set_committed_value to bypass lazy loads
+    # Load version relations
     stmt_legs = select(StrategyLeg).where(StrategyLeg.strategy_version_id == version.id).order_by(StrategyLeg.sequence.asc())
     res_legs = await db.execute(stmt_legs)
     set_committed_value(version, "legs", list(res_legs.scalars().all()))
@@ -108,39 +243,145 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
     res_exit = await db.execute(stmt_exit)
     set_committed_value(version, "exit_setting", res_exit.scalar_one_or_none())
 
-    v_data = await map_version_to_response_dict(version)
+    # Map legs
+    legs_resp = []
+    for leg in version.legs:
+        legs_resp.append(StrategyLegResponse(
+            id=leg.id,
+            sequence=leg.sequence,
+            segment=leg.segment,
+            side=leg.side,
+            strikeSelection=leg.strike_selection,
+            strikeValue=leg.strike_value,
+            expiry=leg.expiry,
+            lots=leg.lots,
+            targetType=leg.target_type,
+            targetValue=leg.target_value,
+            stopLossType=leg.stop_loss_type,
+            stopLossValue=leg.stop_loss_value,
+            trailingSlEnabled=leg.trailing_sl_enabled,
+            trailingSlActivateType=leg.trailing_sl_activate_type,
+            trailingSlActivateValue=leg.trailing_sl_activate_value,
+            trailingSlIncreaseBy=leg.trailing_sl_increase_by,
+            trailingSlBy=leg.trailing_sl_by
+        ))
+
+    entry_setting = StrategyEntrySettingResponse(
+        entryTime=version.entry_setting.entry_time if version.entry_setting else "09:15"
+    )
+
+    exit_setting = StrategyExitSettingResponse(
+        profitMtmType=version.exit_setting.profit_mtm_type if version.exit_setting else "NONE",
+        profitMtmValue=version.exit_setting.profit_mtm_value if version.exit_setting else None,
+        stopLossMtmType=version.exit_setting.stop_loss_mtm_type if version.exit_setting else "NONE",
+        stopLossMtmValue=version.exit_setting.stop_loss_mtm_value if version.exit_setting else None,
+        exitTime=version.exit_setting.exit_time if version.exit_setting else "15:15",
+        exitOnExpiry=version.exit_setting.exit_on_expiry if version.exit_setting else True,
+        exitAfterEntryType=version.exit_setting.exit_after_entry_type if version.exit_setting else "NONE",
+        exitAfterEntryValue=version.exit_setting.exit_after_entry_value if version.exit_setting else None
+    )
+
+    entry_days = [d.day_of_week for d in version.entry_days]
+
+    builder = load_builder_fields(strategy)
 
     return StrategyResponse(
+        schemaVersion=builder["schemaVersion"],
         id=strategy.id,
         userId=strategy.user_id,
         name=strategy.name,
         description=strategy.description,
         status=strategy.status,
         mode=strategy.mode,
-        versionNumber=v_data["versionNumber"],
-        underlying=v_data["underlying"],
-        capital=v_data["capital"],
-        tradingType=v_data["tradingType"],
-        legs=[StrategyLegResponse.model_validate(leg) for leg in v_data["legs"]],
-        entrySetting=StrategyEntrySettingResponse.model_validate(v_data["entrySetting"]),
-        entryDays=v_data["entryDays"],
-        exitSetting=StrategyExitSettingResponse.model_validate(v_data["exitSetting"])
+        versionNumber=version.version_number,
+        underlying=version.underlying,
+        capital=version.capital,
+        tradingType=version.trading_type,
+        legs=legs_resp,
+        entrySetting=entry_setting,
+        entryDays=entry_days,
+        exitSetting=exit_setting,
+        meta=builder["meta"],
+        youtubeUrl=builder["youtubeUrl"],
+        coreIdea=builder["coreIdea"],
+        category=builder["category"],
+        marketBias=builder["marketBias"],
+        timeframe=builder["timeframe"],
+        instrument=builder["instrument"],
+        schedule=builder["schedule"],
+        entryConditions=builder["entryConditions"],
+        exitConditions=builder["exitConditions"],
+        goldenRules=builder.get("goldenRules"),
+        keyRememberPoints=builder["keyRememberPoints"],
+        riskManagement=builder["riskManagement"],
+        target=builder["target"],
+        scriptExecutionPayload=builder.get("scriptExecutionPayload")
     )
 
-async def create_version(db: AsyncSession, strategy: Strategy, request: StrategyRequest, version_num: int) -> StrategyVersion:
-    """Helper method to instantiate a new StrategyVersion and sub-configurations."""
-    version = StrategyVersion(
-        strategy_id=strategy.id,
-        version_number=version_num,
-        underlying=request.underlying.upper().strip(),
-        capital=request.capital,
-        trading_type=request.tradingType.upper().strip(),
-        created_by=strategy.created_by
-    )
-    db.add(version)
-    await db.flush() # Flush to get version.id
+def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
+    """Derives default/existing relational fields from Strategy Builder JSON fields."""
+    if request.meta and not request.name:
+        request.name = request.meta.strategyName
+    if request.instrument and not request.underlying:
+        request.underlying = request.instrument.underlying
+    if request.underlying:
+        u_upper = str(request.underlying).upper().strip()
+        if "NIFTY 50" in u_upper or u_upper in ("NIFTY_50", "NIFTY50"):
+            request.underlying = "NIFTY"
+        elif "BANK" in u_upper:
+            request.underlying = "BANKNIFTY"
+        elif "FIN" in u_upper:
+            request.underlying = "FINNIFTY"
+        else:
+            request.underlying = u_upper
+    if request.riskManagement and not request.capital:
+        cap = request.riskManagement.capitalAllocationPerTrade
+        if cap is not None:
+            try:
+                request.capital = Decimal(str(cap).strip())
+            except Exception:
+                request.capital = Decimal("100000.00")
+    if not request.capital:
+        request.capital = Decimal("100000.00")
+        
+    if request.schedule:
+        if not request.entrySetting:
+            request.entrySetting = StrategyEntrySettingRequest(entryTime=request.schedule.entryFrom)
+        if not request.entryDays:
+            source_days = request.schedule.applicableDays
+            if not source_days and request.schedule.entryDays:
+                source_days = request.schedule.entryDays
+            if not source_days:
+                source_days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
-    # 1. Position Legs
+            day_map = {
+                "Mon": "MONDAY", "Tue": "TUESDAY", "Wed": "WEDNESDAY", 
+                "Thu": "THURSDAY", "Fri": "FRIDAY", "Sat": "SATURDAY", "Sun": "SUNDAY"
+            }
+            request.entryDays = [day_map.get(d, d.upper()) for d in source_days]
+        if not request.exitSetting:
+            request.exitSetting = StrategyExitSettingRequest(
+                exitTime=request.schedule.forcedExitTime,
+                profitMtmType="NONE",
+                stopLossMtmType="NONE"
+            )
+            
+    if not request.legs:
+        # Default options leg placeholder to keep existing engine happy
+        request.legs = [
+            StrategyLegRequest(
+                sequence=1,
+                segment="OPT",
+                side="BUY",
+                strikeSelection="ATM",
+                expiry="WEEKLY",
+                lots=1
+            )
+        ]
+    return request
+
+async def populate_version_relations(db: AsyncSession, version: StrategyVersion, request: StrategyRequest) -> StrategyVersion:
+    """Configures child relationships on an existing StrategyVersion."""
     for leg_req in request.legs:
         leg = StrategyLeg(
             strategy_version_id=version.id,
@@ -163,7 +404,6 @@ async def create_version(db: AsyncSession, strategy: Strategy, request: Strategy
         )
         db.add(leg)
 
-    # 2. Entry Settings & Days
     entry_setting = StrategyEntrySetting(
         strategy_version_id=version.id,
         entry_time=request.entrySetting.entryTime.strip()
@@ -177,7 +417,6 @@ async def create_version(db: AsyncSession, strategy: Strategy, request: Strategy
         )
         db.add(entry_day)
 
-    # 3. Exit Settings
     exit_setting = StrategyExitSetting(
         strategy_version_id=version.id,
         profit_mtm_type=request.exitSetting.profitMtmType.upper().strip(),
@@ -191,165 +430,326 @@ async def create_version(db: AsyncSession, strategy: Strategy, request: Strategy
     )
     db.add(exit_setting)
 
+    from app.strategies.models import StrategyCondition, StrategyGoldenRule
+    from app.strategies.parser.deterministic_parser import parse_logical_expression
+    from app.strategies.rules.rule_validator import validate_strategy_rule
+    from app.strategies.rules.rule_schema import StrategyRule
+    from app.strategies.rules.rule_normalizer import normalize_parsed_rule
+    import json
+
+    # 1. Save entry conditions
+    if request.entryConditions:
+        for cond_item in request.entryConditions:
+            raw_text = ""
+            if isinstance(cond_item, str):
+                raw_text = cond_item
+            elif isinstance(cond_item, dict):
+                raw_text = cond_item.get("rawText", "")
+            elif hasattr(cond_item, "rawText"):
+                raw_text = cond_item.rawText
+                
+            parsed = parse_logical_expression(raw_text, default_timeframe=request.timeframe or "15m")
+            rule_obj = StrategyRule(rawText=raw_text, parsedRule=parsed)
+            rule_obj = validate_strategy_rule(rule_obj)
+            norm = normalize_parsed_rule(parsed) if parsed else raw_text
+            
+            db_cond = StrategyCondition(
+                strategy_version_id=version.id,
+                rule_type="ENTRY",
+                raw_text=raw_text,
+                normalized_text=norm,
+                rule_json=json.dumps(rule_obj.parsedRule.model_dump(by_alias=True)) if rule_obj.parsedRule else None
+            )
+            db.add(db_cond)
+
+    # 2. Save exit conditions
+    if request.exitConditions:
+        for cond_item in request.exitConditions:
+            raw_text = ""
+            if isinstance(cond_item, str):
+                raw_text = cond_item
+            elif isinstance(cond_item, dict):
+                raw_text = cond_item.get("rawText", "")
+            elif hasattr(cond_item, "rawText"):
+                raw_text = cond_item.rawText
+                
+            parsed = parse_logical_expression(raw_text, default_timeframe=request.timeframe or "15m")
+            rule_obj = StrategyRule(rawText=raw_text, parsedRule=parsed)
+            rule_obj = validate_strategy_rule(rule_obj)
+            norm = normalize_parsed_rule(parsed) if parsed else raw_text
+            
+            db_cond = StrategyCondition(
+                strategy_version_id=version.id,
+                rule_type="EXIT",
+                raw_text=raw_text,
+                normalized_text=norm,
+                rule_json=json.dumps(rule_obj.parsedRule.model_dump(by_alias=True)) if rule_obj.parsedRule else None
+            )
+            db.add(db_cond)
+
+    # 3. Save Golden Rules
+    if request.goldenRules:
+        for rule_item in request.goldenRules:
+            raw_text = ""
+            if isinstance(rule_item, str):
+                raw_text = rule_item
+            elif isinstance(rule_item, dict):
+                raw_text = rule_item.get("rawText", "")
+            elif hasattr(rule_item, "rawText"):
+                raw_text = rule_item.rawText
+                
+            from app.strategies.parser.golden_rule_parser import parse_golden_rule
+            res = parse_golden_rule(raw_text, default_timeframe=request.timeframe or "15m")
+            if res.parsed_rule:
+                res.parsed_rule.mandatory = True
+            rule_obj = StrategyRule(rawText=raw_text, parsedRule=res.parsed_rule)
+            rule_obj = validate_strategy_rule(rule_obj)
+            
+            norm = rule_obj.parsedRule.confirmation.replace("_", " ").capitalize() if rule_obj.parsedRule and rule_obj.parsedRule.confirmation else raw_text
+            
+            db_rule = StrategyGoldenRule(
+                strategy_version_id=version.id,
+                raw_text=raw_text,
+                normalized_text=norm,
+                rule_type="GOLDEN_RULE",
+                mandatory=True,
+                evaluation=rule_obj.parsedRule.evaluation if rule_obj.parsedRule else "CANDLE_CLOSE",
+                confirmation=rule_obj.parsedRule.confirmation if rule_obj.parsedRule and rule_obj.parsedRule.confirmation else "WAIT_FOR_CANDLE_CLOSE",
+                timeframe=rule_obj.parsedRule.timeframe if rule_obj.parsedRule else (request.timeframe or "15m"),
+                rule_json=json.dumps(rule_obj.parsedRule.model_dump(by_alias=True)) if rule_obj.parsedRule else None
+            )
+            db.add(db_rule)
+
     await db.flush()
     return version
 
-async def create_strategy(db: AsyncSession, request: StrategyRequest, user_id: int) -> StrategyResponse:
-    """Validates parameters, creates strategy record and Version 1 child models."""
-    val_result = validate_strategy_request(request)
-    if not val_result.valid:
-        raise ValidationError(f"Strategy validation failed: {val_result.errors[0].message}", data=val_result.errors)
-
-    # Name uniqueness check for user
-    stmt_user = select(User).where(User.id == user_id)
-    res_user = await db.execute(stmt_user)
-    user = res_user.scalar_one_or_none()
-    if not user:
-        raise ResourceNotFoundError("User not found")
-
-    stmt_dup = select(Strategy).where(
-        Strategy.user_id == user_id,
-        func.lower(Strategy.name) == request.name.strip().lower()
+async def create_version(db: AsyncSession, strategy: Strategy, request: StrategyRequest, version_num: int) -> StrategyVersion:
+    """Instantiates a new StrategyVersion and configures relationships."""
+    version = StrategyVersion(
+        strategy_id=strategy.id,
+        version_number=version_num,
+        underlying=request.underlying.upper().strip(),
+        capital=request.capital,
+        trading_type=request.tradingType.upper().strip(),
+        created_by=strategy.created_by
     )
-    res_dup = await db.execute(stmt_dup)
-    if res_dup.scalar_one_or_none():
-        raise ValidationError(f"A strategy with name '{request.name}' already exists.")
-
-    strategy = Strategy(
-        user_id=user_id,
-        name=request.name.strip(),
-        description=request.description,
-        mode=request.mode.upper().strip(),
-        status="DRAFT",
-        created_by=user.email,
-        is_prebuilt=False,
-        is_active=True
-    )
-    db.add(strategy)
+    db.add(version)
     await db.flush()
+    return await populate_version_relations(db, version, request)
 
-    # Create version 1
-    version = await create_version(db, strategy, request, 1)
+class StrategyService:
+    @staticmethod
+    async def create_strategy(db: AsyncSession, request: StrategyRequest, user_id: int) -> StrategyResponse:
+        request = map_request_from_builder(request)
+        
+        val_result = validate_strategy_request(request)
+        if not val_result.valid:
+            raise ValidationError(f"Strategy validation failed: {val_result.errors[0].message}", data=val_result.errors)
+        
+        # Uniqueness check
+        stmt_dup = select(Strategy).where(
+            Strategy.user_id == user_id,
+            func.lower(Strategy.name) == request.name.strip().lower()
+        )
+        res_dup = await db.execute(stmt_dup)
+        if res_dup.scalar_one_or_none():
+            raise ValidationError(f"A strategy with name '{request.name}' already exists.")
 
-    strategy.current_version_id = version.id
-    db.add(strategy)
-    await db.flush()
+        user = await StrategyRepository.get_user_by_id(db, user_id)
+        if not user:
+            raise ResourceNotFoundError("User not found")
 
-    return await build_strategy_response(db, strategy)
+        status_val = "DRAFT"
+        if request.meta and request.meta.status:
+            status_val = request.meta.status.upper().strip()
 
-async def update_strategy(db: AsyncSession, strategy_id: int, request: StrategyRequest, user_id: int) -> StrategyResponse:
-    """Modifies properties, triggering Version N+1 if active executions exist or editing in-place if not."""
-    val_result = validate_strategy_request(request)
-    if not val_result.valid:
-        raise ValidationError(f"Strategy validation failed: {val_result.errors[0].message}", data=val_result.errors)
+        strategy = Strategy(
+            user_id=user_id,
+            name=request.name.strip(),
+            description=request.description or "",
+            mode=request.mode.upper().strip(),
+            status=status_val,
+            created_by=user.email,
+            is_prebuilt=False,
+            is_active=True,
+            parameters=serialize_builder_fields(request)
+        )
+        db.add(strategy)
+        await db.flush()
 
-    stmt_strat = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
-    res_strat = await db.execute(stmt_strat)
-    strategy = res_strat.scalar_one_or_none()
-    if not strategy:
-        raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+        version = await create_version(db, strategy, request, 1)
+        strategy.current_version_id = version.id
+        db.add(strategy)
+        await db.flush()
 
-    # Name duplicate check excluding current strategy
-    stmt_dup = select(Strategy).where(
-        Strategy.user_id == user_id,
-        Strategy.id != strategy_id,
-        func.lower(Strategy.name) == request.name.strip().lower()
-    )
-    res_dup = await db.execute(stmt_dup)
-    if res_dup.scalar_one_or_none():
-        raise ValidationError(f"Another strategy with name '{request.name}' already exists.")
+        # Initialize StrategyRuntimeState in WAITING lifecycle state
+        await StrategyStateManager.initialize_runtime_state(
+            db=db,
+            strategy_id=strategy.id,
+            strategy_version_id=version.id
+        )
 
-    strategy.name = request.name.strip()
-    strategy.description = request.description
-    strategy.mode = request.mode.upper().strip()
+        return await build_strategy_response(db, strategy)
 
-    # Fetch current version
-    stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
-    res_version = await db.execute(stmt_version)
-    current_version = res_version.scalar_one_or_none()
+    @staticmethod
+    async def update_strategy(db: AsyncSession, strategy_id: int, request: StrategyRequest, user_id: int) -> StrategyResponse:
+        request = map_request_from_builder(request)
 
-    has_executions = False
-    if current_version:
-        # Check executions
-        stmt_exec_exists = select(exists().where(StrategyExecution.strategy_version_id == current_version.id))
-        res_exec_exists = await db.execute(stmt_exec_exists)
-        has_executions = res_exec_exists.scalar()
+        val_result = validate_strategy_request(request)
+        if not val_result.valid:
+            raise ValidationError(f"Strategy validation failed: {val_result.errors[0].message}", data=val_result.errors)
 
-    if has_executions:
-        # Immutable versioning: create a new version incremented by 1
-        next_ver = current_version.version_number + 1
-        new_version = await create_version(db, strategy, request, next_ver)
-        strategy.current_version_id = new_version.id
-    else:
-        # Inplace edit: delete previous version config and write new setup
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        if not strategy:
+            raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+
+        stmt_dup = select(Strategy).where(
+            Strategy.user_id == user_id,
+            Strategy.id != strategy_id,
+            func.lower(Strategy.name) == request.name.strip().lower()
+        )
+        res_dup = await db.execute(stmt_dup)
+        if res_dup.scalar_one_or_none():
+            raise ValidationError(f"Another strategy with name '{request.name}' already exists.")
+
+        strategy.name = request.name.strip()
+        strategy.description = request.description or ""
+        strategy.mode = request.mode.upper().strip()
+        if request.meta and request.meta.status:
+            strategy.status = request.meta.status.upper().strip()
+        strategy.parameters = serialize_builder_fields(request)
+
+        stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
+        res_version = await db.execute(stmt_version)
+        current_version = res_version.scalar_one_or_none()
+
+        is_immutable = False
         if current_version:
-            # Nullify FK constraint first to avoid FK error on deletion
-            strategy.current_version_id = None
-            db.add(strategy)
-            await db.flush()
-            
-            # Delete old version configuration (cascades will delete legs, days, entry, exit)
-            await db.delete(current_version)
-            await db.flush()
+            is_immutable = await VersionService.is_version_immutable(db, current_version.id)
 
-        new_version = await create_version(db, strategy, request, current_version.version_number if current_version else 1)
-        strategy.current_version_id = new_version.id
+        if is_immutable:
+            # Create a new version incremented by 1
+            next_ver = current_version.version_number + 1
+            new_version = await create_version(db, strategy, request, next_ver)
+            strategy.current_version_id = new_version.id
+        else:
+            # Edit in-place: update current_version attributes directly and replace child relations
+            if current_version:
+                current_version.underlying = request.underlying.upper().strip()
+                current_version.capital = request.capital
+                current_version.trading_type = request.tradingType.upper().strip()
+                db.add(current_version)
 
-    db.add(strategy)
-    await db.flush()
+                from app.strategies.models import StrategyCondition, StrategyGoldenRule
+                # Clear existing child records
+                await db.execute(delete(StrategyLeg).where(StrategyLeg.strategy_version_id == current_version.id))
+                await db.execute(delete(StrategyEntrySetting).where(StrategyEntrySetting.strategy_version_id == current_version.id))
+                await db.execute(delete(StrategyEntryDay).where(StrategyEntryDay.strategy_version_id == current_version.id))
+                await db.execute(delete(StrategyExitSetting).where(StrategyExitSetting.strategy_version_id == current_version.id))
+                await db.execute(delete(StrategyCondition).where(StrategyCondition.strategy_version_id == current_version.id))
+                await db.execute(delete(StrategyGoldenRule).where(StrategyGoldenRule.strategy_version_id == current_version.id))
+                await db.flush()
 
-    return await build_strategy_response(db, strategy)
+                await populate_version_relations(db, current_version, request)
+            else:
+                new_version = await create_version(db, strategy, request, 1)
+                strategy.current_version_id = new_version.id
 
-async def get_my_strategies(db: AsyncSession, user_id: int) -> List[StrategyResponse]:
-    """Retrieves all strategies owned by a user."""
-    stmt = select(Strategy).where(Strategy.user_id == user_id).order_by(Strategy.id.desc())
-    res = await db.execute(stmt)
-    strategies = res.scalars().all()
-    
-    results = []
-    for s in strategies:
-        results.append(await build_strategy_response(db, s))
-    return results
+        db.add(strategy)
+        await db.flush()
 
-async def get_strategy_details(db: AsyncSession, strategy_id: int, user_id: int) -> StrategyResponse:
-    """Retrieves a strategy by user id and strategy id."""
-    stmt = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
-    return await build_strategy_response(db, strategy)
+        return await build_strategy_response(db, strategy)
 
-async def delete_strategy(db: AsyncSession, strategy_id: int, user_id: int) -> None:
-    """Deletes a strategy and its mappings."""
-    stmt = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+    @staticmethod
+    async def get_strategy_details(db: AsyncSession, strategy_id: int, user_id: int) -> StrategyResponse:
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        if not strategy:
+            raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+        return await build_strategy_response(db, strategy)
 
-    # Nullify current version relation first
-    strategy.current_version_id = None
-    db.add(strategy)
-    await db.flush()
+    @staticmethod
+    async def list_strategies(db: AsyncSession, user_id: int, page: int, size: int) -> List[StrategyResponse]:
+        strategies = await StrategyRepository.list_strategies_by_user(db, user_id, page, size)
+        results = []
+        for s in strategies:
+            results.append(await build_strategy_response(db, s))
+        return results
 
-    # Delete strategy (cascades versioning, legs, etc.)
-    await db.delete(strategy)
-    await db.flush()
+    @staticmethod
+    async def delete_strategy(db: AsyncSession, strategy_id: int, user_id: int) -> None:
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        if not strategy:
+            raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
 
-async def update_status(db: AsyncSession, strategy_id: int, status_str: str, user_id: int) -> StrategyResponse:
-    """Transitions strategy lifecycle status, verifying validation constraints."""
-    stmt = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+        strategy.current_version_id = None
+        db.add(strategy)
+        await db.flush()
+        await db.delete(strategy)
+        await db.flush()
 
-    if status_str.upper() == "ACTIVE_LIVE":
-        if strategy.current_version_id is None:
-            raise ValidationError("Strategy cannot be activated without an active version configuration.")
+    @staticmethod
+    async def update_status(db: AsyncSession, strategy_id: int, status_str: str, user_id: int) -> StrategyResponse:
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        if not strategy:
+            raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
 
-    strategy.status = status_str.upper().strip()
-    db.add(strategy)
-    await db.flush()
-    return await build_strategy_response(db, strategy)
+        valid_states = {"DRAFT", "PAPER", "ACTIVE_LIVE", "PAUSED", "STOPPED"}
+        trans = status_str.upper().strip()
+        if trans not in valid_states:
+            raise ValidationError(f"Invalid strategy status transition state: {status_str}")
+
+        strategy.status = trans
+        db.add(strategy)
+        await db.flush()
+        return await build_strategy_response(db, strategy)
+
+    @staticmethod
+    def validate_strategy_definition(request: StrategyRequest) -> StrategyValidationResponse:
+        """Validates all Strategy Builder metadata, schedule, rules, and risk configurations."""
+        errors = []
+        
+        # 1. Meta check
+        if not request.meta or not request.meta.strategyName:
+            errors.append(StrategyValidationError(field="meta.strategyName", code="REQUIRED", message="Strategy name is required"))
+        if not request.timeframe:
+            errors.append(StrategyValidationError(field="timeframe", code="REQUIRED", message="Strategy default timeframe is required"))
+
+        # 2. Schedule check
+        if not request.schedule:
+            errors.append(StrategyValidationError(field="schedule", code="REQUIRED", message="Schedule configuration is required"))
+        else:
+            sched = request.schedule
+            if not re.match(r"^\d{2}:\d{2}$", sched.entryFrom):
+                errors.append(StrategyValidationError(field="schedule.entryFrom", code="INVALID_FORMAT", message="entryFrom must be HH:MM"))
+            if not re.match(r"^\d{2}:\d{2}$", sched.entryTo):
+                errors.append(StrategyValidationError(field="schedule.entryTo", code="INVALID_FORMAT", message="entryTo must be HH:MM"))
+            if not re.match(r"^\d{2}:\d{2}$", sched.forcedExitTime):
+                errors.append(StrategyValidationError(field="schedule.forcedExitTime", code="INVALID_FORMAT", message="forcedExitTime must be HH:MM"))
+
+        # 3. Instrument check
+        if not request.instrument or not request.instrument.underlying:
+            errors.append(StrategyValidationError(field="instrument.underlying", code="REQUIRED", message="Instrument underlying asset is required"))
+
+        # 4. Rules check
+        if request.entryConditions:
+            for idx, cond in enumerate(request.entryConditions):
+                if isinstance(cond, str):
+                    parsed = parse_logical_expression(cond, default_timeframe=request.timeframe or "15m")
+                    rule_obj = StrategyRule(rawText=cond, parsedRule=parsed)
+                elif isinstance(cond, StrategyRule):
+                    rule_obj = cond
+                else:
+                    rule_obj = StrategyRule.model_validate(cond)
+
+                rule_obj = validate_strategy_rule(rule_obj)
+                if rule_obj.validationStatus == "INVALID":
+                    errors.append(StrategyValidationError(
+                        field=f"entryConditions[{idx}]",
+                        code="INVALID_RULE",
+                        message=rule_obj.errors[0] if rule_obj.errors else "Invalid rule structure"
+                    ))
+
+        return StrategyValidationResponse(
+            valid=len(errors) == 0,
+            errors=errors
+        )

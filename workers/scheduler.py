@@ -63,8 +63,49 @@ async def trigger_signal_if_absent(db: AsyncSession, strategy: Strategy, version
     except Exception as ex:
         logger.error(f"Error triggering signal for Strategy {strategy.id}: {str(ex)}")
 
+async def process_strategy_entry(strategy_id: int, today: date, current_time_str: str, day_name: str) -> None:
+    """Evaluates and triggers entry logic for a single strategy in its own isolated database session."""
+    async with AsyncSessionLocal() as db:
+        try:
+            stmt_strat = select(Strategy).where(Strategy.id == strategy_id)
+            res_strat = await db.execute(stmt_strat)
+            strategy = res_strat.scalar_one_or_none()
+            if not strategy or not strategy.is_active or strategy.status != "ACTIVE_LIVE":
+                return
+
+            stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
+            res_version = await db.execute(stmt_version)
+            version = res_version.scalar_one_or_none()
+
+            if not version:
+                return
+
+            from app.strategies.models import StrategyEntrySetting, StrategyEntryDay
+            stmt_entry = select(StrategyEntrySetting).where(StrategyEntrySetting.strategy_version_id == version.id)
+            res_entry = await db.execute(stmt_entry)
+            version.entry_setting = res_entry.scalar_one_or_none()
+
+            if not version.entry_setting:
+                return
+
+            entry_time = version.entry_setting.entry_time
+            if current_time_str != entry_time:
+                return
+
+            stmt_days = select(StrategyEntryDay).where(StrategyEntryDay.strategy_version_id == version.id)
+            res_days = await db.execute(stmt_days)
+            version.entry_days = res_days.scalars().all()
+
+            day_matches = any(day.day_of_week.upper() == day_name for day in version.entry_days)
+            if not day_matches:
+                return
+
+            await trigger_signal_if_absent(db, strategy, version, today, entry_time)
+        except Exception as ex:
+            logger.error(f"Error checking strategy {strategy_id} in scheduler: {str(ex)}")
+
 async def check_and_trigger_strategies() -> None:
-    """Scheduler minute-tick job. Applies trading day, time, and timezone rules."""
+    """Scheduler minute-tick job. Applies trading day, time, and timezone rules in parallel."""
     now_ist = datetime.now(ZONE_KOLKATA)
     today = now_ist.date()
     now_time = now_ist.time()
@@ -86,50 +127,21 @@ async def check_and_trigger_strategies() -> None:
     if now_time < market_open or now_time > market_close:
         return
 
-    logger.info(f"Scheduler executing check at {current_time_str} IST")
+    logger.info(f"Scheduler executing parallel check at {current_time_str} IST")
 
     async with AsyncSessionLocal() as db:
-        # 4. Fetch all active live strategies
-        stmt = select(Strategy).where(
+        # Fetch only strategy IDs to keep the main session short
+        stmt = select(Strategy.id).where(
             Strategy.status == "ACTIVE_LIVE",
             Strategy.is_active == True
         )
         res = await db.execute(stmt)
-        active_strategies = res.scalars().all()
+        active_ids = list(res.scalars().all())
 
-        for strategy in active_strategies:
-            # Eager load current version
-            stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
-            res_version = await db.execute(stmt_version)
-            version = res_version.scalar_one_or_none()
-
-            if not version:
-                continue
-
-            # Load entry settings & days
-            from app.strategies.models import StrategyEntrySetting
-            stmt_entry = select(StrategyEntrySetting).where(StrategyEntrySetting.strategy_version_id == version.id)
-            res_entry = await db.execute(stmt_entry)
-            version.entry_setting = res_entry.scalar_one_or_none()
-
-            if not version.entry_setting:
-                continue
-
-            entry_time = version.entry_setting.entry_time
-            if current_time_str != entry_time:
-                continue
-
-            stmt_days = select(StrategyEntryDay).where(StrategyEntryDay.strategy_version_id == version.id)
-            res_days = await db.execute(stmt_days)
-            version.entry_days = res_days.scalars().all()
-
-            # Check active days
-            day_matches = any(day.day_of_week.upper() == day_name for day in version.entry_days)
-            if not day_matches:
-                continue
-
-            # Eligible! Trigger signal
-            await trigger_signal_if_absent(db, strategy, version, today, entry_time)
+    if active_ids:
+        # Run all strategy evaluations concurrently in their own isolated connection sessions
+        tasks = [process_strategy_entry(sid, today, current_time_str, day_name) for sid in active_ids]
+        await asyncio.gather(*tasks)
 
 def start_scheduler():
     scheduler = AsyncIOScheduler()

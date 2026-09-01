@@ -48,13 +48,32 @@ async def clean_db():
     """Ensures tables exist and cleans up database tables in topological order before each test run."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    """Cleans up all database tables in topological order before each test run."""
+    async def do_clean(conn):
         for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(delete(table))
+            if table.name == "users":
+                await conn.execute(delete(table).where(table.c.email != 'superadmin@trading.com'))
+            elif table.name == "wallets":
+                # Retrieve superadmin's ID
+                res = await conn.execute(
+                    select(Base.metadata.tables["users"].c.id).where(Base.metadata.tables["users"].c.email == 'superadmin@trading.com')
+                )
+                superadmin_id = res.scalar()
+                if superadmin_id:
+                    await conn.execute(delete(table).where(table.c.user_id != superadmin_id))
+                else:
+                    await conn.execute(delete(table))
+            else:
+                await conn.execute(delete(table))
+
+
+    async with test_engine.begin() as conn:
+        await do_clean(conn)
     yield
     # Cleanup after test
     async with test_engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(delete(table))
+        await do_clean(conn)
+
 
 @pytest.fixture(scope="function")
 async def db_session():

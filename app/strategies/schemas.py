@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List
+from typing import Optional, List, Union, Any
 from decimal import Decimal
 import re
+from app.strategies.rules.rule_schema import StrategyRule, ParsedRule
 
 class StrategyLegRequest(BaseModel):
     sequence: int
@@ -60,21 +61,121 @@ class StrategyExitSettingRequest(BaseModel):
             raise ValueError("Time must be in HH:MM format")
         return value
 
-class StrategyRequest(BaseModel):
-    name: str = Field(..., min_length=3, max_length=150)
-    description: Optional[str] = None
-    underlying: str
-    capital: Decimal = Field(..., gt=0)
-    tradingType: str = Field("INTRADAY", alias="tradingType")
-    mode: str = Field("PAPER", alias="mode") # PAPER, LIVE
-    legs: List[StrategyLegRequest]
-    entrySetting: StrategyEntrySettingRequest = Field(..., alias="entrySetting")
-    entryDays: List[str] = Field(..., alias="entryDays") # MONDAY, etc.
-    exitSetting: StrategyExitSettingRequest = Field(..., alias="exitSetting")
+# --- Strategy Builder v2.0.0 Schemas ---
+
+class StrategyMeta(BaseModel):
+    strategyId: Optional[str] = Field(None, alias="strategyId")
+    strategyName: str = Field(..., alias="strategyName")
+    authorName: Optional[str] = Field(None, alias="authorName")
+    createdAt: Optional[str] = Field(None, alias="createdAt")
+    status: Optional[str] = Field("DRAFT", alias="status")
 
     model_config = {
         "populate_by_name": True
     }
+
+class InstrumentConfig(BaseModel):
+    underlying: str
+    indicesArray: Optional[List[str]] = Field(None, alias="indicesArray")
+    expiryType: Optional[str] = Field("Weekly", alias="expiryType")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class ScheduleConfig(BaseModel):
+    entryFrom: str = Field(..., alias="entryFrom")
+    entryTo: Optional[str] = Field("14:30", alias="entryTo")
+    forcedExitTime: str = Field(..., alias="forcedExitTime")
+    applicableDays: Optional[List[str]] = Field(None, alias="applicableDays")
+    avoidEvents: Optional[str] = Field("", alias="avoidEvents")
+    entryDay: Optional[str] = Field(None, alias="entryDay")
+    exitDay: Optional[str] = Field(None, alias="exitDay")
+    weeklyCycleScope: Optional[str] = Field(None, alias="weeklyCycleScope")
+    entryDays: Optional[List[str]] = Field(None, alias="entryDays")
+    exitDays: Optional[List[str]] = Field(None, alias="exitDays")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class RiskParameter(BaseModel):
+    type: str
+    value: float
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class RiskManagementConfig(BaseModel):
+    riskRewardRatio: Optional[str] = Field(None, alias="riskRewardRatio")
+    stopLoss: Optional[Union[str, RiskParameter, dict]] = Field(None, alias="stopLoss")
+    maxLossPerTrade: Optional[Union[str, float]] = Field(None, alias="maxLossPerTrade")
+    maxLossPerDay: Optional[Union[str, float]] = Field(None, alias="maxLossPerDay")
+    capitalAllocationPerTrade: Optional[Union[str, float]] = Field(None, alias="capitalAllocationPerTrade")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class TargetParameter(BaseModel):
+    value: float
+    type: str
+    exitPercentage: float = Field(..., alias="exitPercentage")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class TargetConfig(BaseModel):
+    value: Optional[str] = None
+    scaleOutPlan: Optional[str] = Field(None, alias="scaleOutPlan")
+    targets: Optional[List[TargetParameter]] = None
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class StrategyRequest(BaseModel):
+    schemaVersion: Optional[str] = Field("2.0.0", alias="schemaVersion")
+    executionEngine: Optional[str] = Field("ZENALGO_QUANT_ENGINE", alias="executionEngine")
+    
+    # Relational defaults/compat fields
+    name: Optional[str] = None
+    underlying: Optional[str] = None
+    capital: Optional[Decimal] = None
+    tradingType: Optional[str] = "INTRADAY"
+    mode: Optional[str] = "PAPER"
+    legs: Optional[List[StrategyLegRequest]] = None
+    entrySetting: Optional[StrategyEntrySettingRequest] = None
+    entryDays: Optional[List[str]] = None
+    exitSetting: Optional[StrategyExitSettingRequest] = None
+    
+    # Builder fields
+    meta: Optional[StrategyMeta] = None
+    description: Optional[str] = None
+    youtubeUrl: Optional[str] = Field(None, alias="youtubeUrl")
+    coreIdea: Optional[str] = Field(None, alias="coreIdea")
+    category: Optional[str] = None
+    marketBias: Optional[str] = Field(None, alias="marketBias")
+    timeframe: Optional[str] = None
+    instrument: Optional[InstrumentConfig] = None
+    schedule: Optional[ScheduleConfig] = None
+    
+    entryConditions: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="entryConditions")
+    exitConditions: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="exitConditions")
+    goldenRules: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="goldenRules")
+    keyRememberPoints: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="keyRememberPoints")
+    
+    riskManagement: Optional[RiskManagementConfig] = Field(None, alias="riskManagement")
+    target: Optional[TargetConfig] = None
+    scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+# --- Response Schemas ---
 
 class StrategyLegResponse(BaseModel):
     id: int
@@ -124,6 +225,9 @@ class StrategyExitSettingResponse(BaseModel):
     }
 
 class StrategyResponse(BaseModel):
+    schemaVersion: str = Field("2.0.0", alias="schemaVersion")
+    executionEngine: str = Field("ZENALGO_QUANT_ENGINE", alias="executionEngine")
+    
     id: int
     userId: int = Field(..., alias="userId")
     name: str
@@ -139,6 +243,25 @@ class StrategyResponse(BaseModel):
     entryDays: List[str] = Field(..., alias="entryDays")
     exitSetting: StrategyExitSettingResponse = Field(..., alias="exitSetting")
 
+    # Strategy Builder fields
+    meta: Optional[StrategyMeta] = None
+    youtubeUrl: Optional[str] = Field(None, alias="youtubeUrl")
+    coreIdea: Optional[str] = Field(None, alias="coreIdea")
+    category: Optional[str] = None
+    marketBias: Optional[str] = Field(None, alias="marketBias")
+    timeframe: Optional[str] = None
+    instrument: Optional[InstrumentConfig] = None
+    schedule: Optional[ScheduleConfig] = None
+    
+    entryConditions: Optional[List[StrategyRule]] = Field(None, alias="entryConditions")
+    exitConditions: Optional[List[StrategyRule]] = Field(None, alias="exitConditions")
+    goldenRules: Optional[List[StrategyRule]] = Field(None, alias="goldenRules")
+    keyRememberPoints: Optional[List[StrategyRule]] = Field(None, alias="keyRememberPoints")
+    
+    riskManagement: Optional[RiskManagementConfig] = Field(None, alias="riskManagement")
+    target: Optional[TargetConfig] = None
+    scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
+
     model_config = {
         "populate_by_name": True
     }
@@ -151,4 +274,3 @@ class StrategyValidationError(BaseModel):
 class StrategyValidationResponse(BaseModel):
     valid: bool
     errors: List[StrategyValidationError]
-

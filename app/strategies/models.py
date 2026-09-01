@@ -28,6 +28,8 @@ class Strategy(Base):
     current_version = relationship("StrategyVersion", foreign_keys=[current_version_id], post_update=True)
     versions = relationship("StrategyVersion", back_populates="strategy", foreign_keys="[StrategyVersion.strategy_id]", cascade="all, delete-orphan")
     executions = relationship("StrategyExecution", back_populates="strategy", cascade="all, delete-orphan")
+    runtime_state = relationship("StrategyRuntimeState", back_populates="strategy", uselist=False, cascade="all, delete-orphan")
+
 
 class StrategyVersion(Base):
     __tablename__ = "strategy_versions"
@@ -50,6 +52,8 @@ class StrategyVersion(Base):
     entry_setting = relationship("StrategyEntrySetting", uselist=False, back_populates="version", cascade="all, delete-orphan")
     entry_days = relationship("StrategyEntryDay", back_populates="version", cascade="all, delete-orphan")
     exit_setting = relationship("StrategyExitSetting", uselist=False, back_populates="version", cascade="all, delete-orphan")
+    conditions = relationship("StrategyCondition", back_populates="version", cascade="all, delete-orphan")
+    golden_rules = relationship("StrategyGoldenRule", back_populates="version", cascade="all, delete-orphan")
 
 class StrategyLeg(Base):
     __tablename__ = "strategy_legs"
@@ -169,3 +173,61 @@ class StrategyExecutionLeg(Base):
 
     strategy_execution = relationship("StrategyExecution", back_populates="legs")
     strategy_leg = relationship("StrategyLeg")
+
+class StrategyCondition(Base):
+    __tablename__ = "strategy_conditions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    strategy_version_id = Column(BigInteger, ForeignKey("strategy_versions.id", ondelete="CASCADE"), nullable=False)
+    rule_type = Column(String(30), nullable=False) # ENTRY, EXIT
+    raw_text = Column(Text, nullable=False)
+    normalized_text = Column(Text, nullable=True)
+    rule_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    version = relationship("StrategyVersion", back_populates="conditions")
+
+class StrategyGoldenRule(Base):
+    __tablename__ = "strategy_golden_rules"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    strategy_version_id = Column(BigInteger, ForeignKey("strategy_versions.id", ondelete="CASCADE"), nullable=False)
+    raw_text = Column(Text, nullable=False)
+    normalized_text = Column(Text, nullable=True)
+    rule_type = Column(String(30), nullable=False, default="GOLDEN_RULE")
+    mandatory = Column(Boolean, nullable=False, default=True)
+    evaluation = Column(String(50), nullable=False, default="CANDLE_CLOSE")
+    confirmation = Column(String(100), nullable=False)
+    timeframe = Column(String(30), nullable=False, default="15m")
+    rule_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    version = relationship("StrategyVersion", back_populates="golden_rules")
+
+class StrategyRuntimeState(Base):
+    __tablename__ = "strategy_runtime_states"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    strategy_id = Column(BigInteger, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    strategy_version_id = Column(BigInteger, ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    lifecycle_state = Column(String(50), nullable=False, default="WAITING")
+    paused_from_state = Column(String(50), nullable=True)
+    last_evaluated_at = Column(DateTime(timezone=True), nullable=True)
+    monitoring_started_at = Column(DateTime(timezone=True), nullable=True)
+    monitoring_stopped_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    strategy = relationship("Strategy", back_populates="runtime_state")
+    strategy_version = relationship("StrategyVersion")
+
+class StrategyEventProcessing(Base):
+    __tablename__ = "strategy_event_processing"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    strategy_id = Column(BigInteger, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    market_event_key = Column(String(255), nullable=False, unique=True, index=True)
+    processed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    strategy = relationship("Strategy")
+

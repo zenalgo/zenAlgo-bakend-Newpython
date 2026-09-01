@@ -5,12 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.exceptions import setup_exception_handlers
 
+# Pre-import all SQLAlchemy models to register them on Base metadata registry
+import app.users.models
+import app.execution.models
+import app.strategies.models
+import app.wallets.models
+import app.subscriptions.models
+
 # Import routers
 from app.auth.router import router as auth_router
 from app.users.router import router as users_router
 from app.wallets.router import router as wallets_router
 from app.subscriptions.router import trader_router, admin_router as sub_admin_router
-from app.strategies.router import router as strategies_router
+from app.strategies.router import router as strategies_router, rules_router, strategy_api_router
 from app.brokers.router import router as brokers_router
 
 app = FastAPI(
@@ -68,6 +75,8 @@ app.include_router(wallets_router)
 app.include_router(trader_router)
 app.include_router(sub_admin_router)
 app.include_router(strategies_router)
+app.include_router(rules_router)
+app.include_router(strategy_api_router)
 app.include_router(brokers_router)
 app.include_router(ws_router)
 
