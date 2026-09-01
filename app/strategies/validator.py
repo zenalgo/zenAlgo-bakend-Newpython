@@ -3,11 +3,14 @@ from decimal import Decimal
 import re
 from app.strategies.schemas import StrategyRequest, StrategyValidationError, StrategyValidationResponse
 
-SUPPORTED_UNDERLYINGS: Set[str] = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"}
+SUPPORTED_UNDERLYINGS: Set[str] = {
+    "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX",
+    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK", "LT"
+}
 SUPPORTED_TRADING_TYPES: Set[str] = {"INTRADAY", "DELIVERY"}
 SUPPORTED_SEGMENTS: Set[str] = {"OPT", "EQ", "FUT"}
 SUPPORTED_SIDES: Set[str] = {"BUY", "SELL"}
-SUPPORTED_STRIKES: Set[str] = {"ATM", "OTM1", "OTM2", "OTM3", "ITM1", "ITM2", "ITM3", "CUSTOM"}
+SUPPORTED_STRIKES: Set[str] = {"ATM", "OTM", "ITM", "OTM1", "OTM2", "OTM3", "ITM1", "ITM2", "ITM3", "CUSTOM"}
 SUPPORTED_EXPIRIES: Set[str] = {"CURRENT", "NEXT", "WEEKLY", "MONTHLY", "CUSTOM"}
 SUPPORTED_DAYS: Set[str] = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"}
 
@@ -47,8 +50,8 @@ def validate_strategy_request(request: StrategyRequest) -> StrategyValidationRes
     elif len(request.name) < 3 or len(request.name) > 255:
         errors.append(StrategyValidationError(field="name", code="INVALID_NAME_LENGTH", message="Name must be between 3 and 255 characters"))
 
-    if not request.underlying or request.underlying.upper() not in SUPPORTED_UNDERLYINGS:
-        errors.append(StrategyValidationError(field="underlying", code="INVALID_UNDERLYING", message="Underlying must be NIFTY, BANKNIFTY, FINNIFTY, or SENSEX"))
+    if not request.underlying or str(request.underlying).upper().strip() not in SUPPORTED_UNDERLYINGS:
+        errors.append(StrategyValidationError(field="underlying", code="INVALID_UNDERLYING", message=f"Underlying must be one of: {', '.join(sorted(SUPPORTED_UNDERLYINGS))}"))
 
     if request.capital is None or request.capital <= Decimal("0.00"):
         errors.append(StrategyValidationError(field="capital", code="INVALID_CAPITAL", message="Capital must be greater than zero"))

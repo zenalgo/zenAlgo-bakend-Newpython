@@ -36,6 +36,7 @@ VALID_TRANSITIONS = {
         StrategyLifecycleState.RECONCILIATION_REQUIRED
     },
     StrategyLifecycleState.ORDER_PENDING: {
+        StrategyLifecycleState.POSITION_OPEN,
         StrategyLifecycleState.MONITORING_EXIT,
         StrategyLifecycleState.MONITORING_ENTRY, # Revert if broker rejects the order completely
         StrategyLifecycleState.PAUSED,
@@ -305,3 +306,5 @@ class StrategyStateManager:
         return await StrategyStateManager.transition_state(
             db, strategy_id, strategy_version_id, StrategyLifecycleState.RECONCILIATION_REQUIRED, reason, context
         )
+
+strategy_state_manager = StrategyStateManager

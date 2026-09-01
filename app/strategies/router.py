@@ -533,14 +533,15 @@ async def validate_strategy_admin(
         requestId=request_id
     )
 
+@router.post("/strategies/{id}/activate", response_model=ApiResponse[StrategyResponse])
 @router.post("/admin/strategies/{id}/activate-paper", response_model=ApiResponse[StrategyResponse])
-async def activate_paper_admin(
+async def activate_strategy_endpoint(
     request: Request,
     id: int,
-    current_admin = Depends(require_admin),
+    current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await StrategyService.update_status(db, id, "PAPER", current_admin.id)
+    res = await StrategyService.activate_strategy(db, id, current_user.id)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
@@ -629,6 +630,22 @@ async def update_strategy_api(
     return ApiResponse(
         success=True,
         message="Strategy updated successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.post("/{id}/activate", response_model=ApiResponse[StrategyResponse])
+async def activate_strategy_api(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.activate_strategy(db, id, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy activated on paper mode successfully",
         data=res,
         requestId=request_id
     )

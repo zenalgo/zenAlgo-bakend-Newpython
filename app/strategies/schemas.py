@@ -71,7 +71,8 @@ class StrategyMeta(BaseModel):
     status: Optional[str] = Field("DRAFT", alias="status")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class InstrumentConfig(BaseModel):
@@ -80,7 +81,8 @@ class InstrumentConfig(BaseModel):
     expiryType: Optional[str] = Field("Weekly", alias="expiryType")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class ScheduleConfig(BaseModel):
@@ -98,7 +100,8 @@ class ScheduleConfig(BaseModel):
     selectedMonthlyDate: Optional[str] = Field(None, alias="selectedMonthlyDate")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class RiskParameter(BaseModel):
@@ -114,10 +117,20 @@ class RiskManagementConfig(BaseModel):
     stopLoss: Optional[Union[str, RiskParameter, dict]] = Field(None, alias="stopLoss")
     maxLossPerTrade: Optional[Union[str, float]] = Field(None, alias="maxLossPerTrade")
     maxLossPerDay: Optional[Union[str, float]] = Field(None, alias="maxLossPerDay")
+    maxLossPerWeek: Optional[Union[str, float]] = Field(None, alias="maxLossPerWeek")
     capitalAllocationPerTrade: Optional[Union[str, float]] = Field(None, alias="capitalAllocationPerTrade")
+    maxTradesPerDay: Optional[int] = Field(None, alias="maxTradesPerDay")
+    maxOpenPositions: Optional[int] = Field(None, alias="maxOpenPositions")
+    cooldownPeriodMinutes: Optional[int] = Field(None, alias="cooldownPeriodMinutes")
+    positionSizing: Optional[str] = Field(None, alias="positionSizing")
+    consecutiveLossLimit: Optional[int] = Field(None, alias="consecutiveLossLimit")
+    actionOnConsecutiveLoss: Optional[str] = Field(None, alias="actionOnConsecutiveLoss")
+    partialExit: Optional[dict] = Field(None, alias="partialExit")
+    trailingStop: Optional[dict] = Field(None, alias="trailingStop")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class TargetParameter(BaseModel):
@@ -126,7 +139,8 @@ class TargetParameter(BaseModel):
     exitPercentage: float = Field(..., alias="exitPercentage")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class TargetConfig(BaseModel):
@@ -135,7 +149,8 @@ class TargetConfig(BaseModel):
     targets: Optional[List[TargetParameter]] = None
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class StrategyRequest(BaseModel):
@@ -171,10 +186,16 @@ class StrategyRequest(BaseModel):
     
     riskManagement: Optional[RiskManagementConfig] = Field(None, alias="riskManagement")
     target: Optional[TargetConfig] = None
+    options: Optional[dict] = None
+    execution: Optional[dict] = None
+    pivotConfiguration: Optional[dict] = Field(None, alias="pivotConfiguration")
+    eventExclusion: Optional[dict] = Field(None, alias="eventExclusion")
+    tradingHorizon: Optional[str] = Field("Intraday", alias="tradingHorizon")
     scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 # --- Response Schemas ---
@@ -236,6 +257,7 @@ class StrategyResponse(BaseModel):
     description: Optional[str] = None
     status: str
     mode: str
+    currentVersionId: Optional[int] = Field(None, alias="currentVersionId")
     versionNumber: int = Field(..., alias="versionNumber")
     underlying: str
     capital: Decimal
@@ -262,10 +284,16 @@ class StrategyResponse(BaseModel):
     
     riskManagement: Optional[RiskManagementConfig] = Field(None, alias="riskManagement")
     target: Optional[TargetConfig] = None
+    options: Optional[dict] = None
+    execution: Optional[dict] = None
+    pivotConfiguration: Optional[dict] = Field(None, alias="pivotConfiguration")
+    eventExclusion: Optional[dict] = Field(None, alias="eventExclusion")
+    tradingHorizon: Optional[str] = Field("Intraday", alias="tradingHorizon")
     scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class StrategyValidationError(BaseModel):

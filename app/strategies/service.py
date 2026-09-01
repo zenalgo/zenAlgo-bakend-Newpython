@@ -47,6 +47,11 @@ def serialize_builder_fields(request: StrategyRequest) -> str:
         "schedule": request.schedule.model_dump(by_alias=True) if request.schedule else {},
         "riskManagement": request.riskManagement.model_dump(by_alias=True) if request.riskManagement else {},
         "target": request.target.model_dump(by_alias=True) if request.target else {},
+        "options": request.options or {},
+        "execution": request.execution or {},
+        "pivotConfiguration": request.pivotConfiguration or (request.model_extra or {}).get("pivotConfiguration") or {},
+        "eventExclusion": request.eventExclusion or (request.model_extra or {}).get("eventExclusion") or {},
+        "tradingHorizon": request.tradingHorizon or (request.model_extra or {}).get("tradingHorizon") or "Intraday",
         "scriptExecutionPayload": request.scriptExecutionPayload or {},
     }
 
@@ -197,6 +202,11 @@ def load_builder_fields(strategy: Strategy) -> dict:
         "keyRememberPoints": key_remember_points,
         "riskManagement": RiskManagementConfig.model_validate(data["riskManagement"]) if data.get("riskManagement") else None,
         "target": TargetConfig.model_validate(data["target"]) if data.get("target") else None,
+        "options": data.get("options"),
+        "execution": data.get("execution"),
+        "pivotConfiguration": data.get("pivotConfiguration"),
+        "eventExclusion": data.get("eventExclusion"),
+        "tradingHorizon": data.get("tradingHorizon", "Intraday"),
         "scriptExecutionPayload": data.get("scriptExecutionPayload"),
     }
 
@@ -215,15 +225,24 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
             description=strategy.description,
             status=strategy.status,
             mode=strategy.mode,
-            versionNumber=0,
-            underlying="",
-            capital=Decimal("0.00"),
+            currentVersionId=None,
+            versionNumber=1,
+            underlying=strategy.underlying,
+            capital=Decimal("100000.00"),
             tradingType="INTRADAY",
             legs=[],
-            entrySetting={"entryTime": "09:15"},
-            entryDays=[],
-            exitSetting={"exitTime": "15:15"},
-            scriptExecutionPayload=None
+            entrySetting=StrategyEntrySettingResponse(entryTime="09:15"),
+            entryDays=["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+            exitSetting=StrategyExitSettingResponse(
+                profitMtmType="NONE",
+                profitMtmValue=None,
+                stopLossMtmType="NONE",
+                stopLossMtmValue=None,
+                exitTime="15:15",
+                exitOnExpiry=True,
+                exitAfterEntryType="NONE",
+                exitAfterEntryValue=None
+            )
         )
 
     # Load version relations
@@ -293,6 +312,7 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
         description=strategy.description,
         status=strategy.status,
         mode=strategy.mode,
+        currentVersionId=version.id,
         versionNumber=version.version_number,
         underlying=version.underlying,
         capital=version.capital,
@@ -315,6 +335,11 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
         keyRememberPoints=builder["keyRememberPoints"],
         riskManagement=builder["riskManagement"],
         target=builder["target"],
+        options=builder.get("options"),
+        execution=builder.get("execution"),
+        pivotConfiguration=builder.get("pivotConfiguration"),
+        eventExclusion=builder.get("eventExclusion"),
+        tradingHorizon=builder.get("tradingHorizon", "Intraday"),
         scriptExecutionPayload=builder.get("scriptExecutionPayload")
     )
 
@@ -366,18 +391,46 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
                 stopLossMtmType="NONE"
             )
             
+    # Extract options legs if not already explicitly provided in request.legs
     if not request.legs:
-        # Default options leg placeholder to keep existing engine happy
-        request.legs = [
-            StrategyLegRequest(
-                sequence=1,
-                segment="OPT",
-                side="BUY",
-                strikeSelection="ATM",
-                expiry="WEEKLY",
-                lots=1
-            )
-        ]
+        # Check options block
+        options_dict = request.options or (request.scriptExecutionPayload.get("options") if isinstance(request.scriptExecutionPayload, dict) else None) or {}
+        explicit_legs = options_dict.get("legs", [])
+        if explicit_legs and isinstance(explicit_legs, list):
+            mapped_legs = []
+            for idx, raw_leg in enumerate(explicit_legs):
+                seq = int(raw_leg.get("sequence", idx + 1))
+                seg = str(raw_leg.get("segment", "OPT")).upper()
+                side = str(raw_leg.get("action", raw_leg.get("side", "BUY"))).upper()
+                strike_sel = str(raw_leg.get("strikeSelection", "ATM")).upper()
+                strike_val = Decimal(str(raw_leg.get("strikeOffset", raw_leg.get("strikeValue", 0.0))))
+                exp_str = str(raw_leg.get("expiry", "MONTHLY" if "month" in str(raw_leg.get("expiry", "")).lower() else "WEEKLY")).upper()
+                lots = int(raw_leg.get("lots", 1))
+                
+                mapped_legs.append(StrategyLegRequest(
+                    sequence=seq,
+                    segment=seg,
+                    side=side,
+                    strikeSelection=strike_sel,
+                    strikeValue=strike_val,
+                    expiry=exp_str,
+                    lots=lots,
+                    targetType="NONE",
+                    stopLossType="NONE"
+                ))
+            request.legs = mapped_legs
+        else:
+            # Default options leg placeholder to keep existing engine happy
+            request.legs = [
+                StrategyLegRequest(
+                    sequence=1,
+                    segment="OPT",
+                    side="BUY",
+                    strikeSelection="ATM",
+                    expiry="WEEKLY",
+                    lots=1
+                )
+            ]
     return request
 
 async def populate_version_relations(db: AsyncSession, version: StrategyVersion, request: StrategyRequest) -> StrategyVersion:
@@ -701,6 +754,82 @@ class StrategyService:
         strategy.status = trans
         db.add(strategy)
         await db.flush()
+        return await build_strategy_response(db, strategy)
+
+    @staticmethod
+    async def activate_strategy(db: AsyncSession, strategy_id: int, user_id: int) -> StrategyResponse:
+        """
+        Activates strategy on PAPER mode (default safe execution),
+        transitions runtime state: WAITING -> ELIGIBLE -> MONITORING_ENTRY,
+        and registers candidate in StrategyRouter index.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        if not strategy:
+            raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
+
+        if not strategy.current_version_id:
+            raise ValidationError(f"Strategy {strategy_id} has no active version.")
+
+        stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
+        res_version = await db.execute(stmt_version)
+        version = res_version.scalar_one_or_none()
+        if not version:
+            raise ResourceNotFoundError(f"Strategy version {strategy.current_version_id} not found.")
+
+        # Activate on PAPER mode (safe default)
+        strategy.status = "PAPER" if strategy.mode == "PAPER" else "ACTIVE_LIVE"
+        strategy.is_active = True
+        db.add(strategy)
+        await db.flush()
+
+        from app.strategies.enums import StrategyLifecycleState
+        from app.strategies.state_manager import strategy_state_manager
+        # Initialize or advance runtime state: WAITING -> ELIGIBLE -> MONITORING_ENTRY
+        runtime_state = await strategy_state_manager.get_runtime_state(db, strategy.id)
+        if not runtime_state:
+            runtime_state = await strategy_state_manager.initialize_runtime_state(db, strategy.id, version.id)
+
+        if runtime_state.lifecycle_state == "WAITING":
+            await strategy_state_manager.transition_state(db, strategy.id, version.id, StrategyLifecycleState.ELIGIBLE, "Strategy activated")
+            await strategy_state_manager.transition_state(db, strategy.id, version.id, StrategyLifecycleState.MONITORING_ENTRY, "Monitoring market events")
+
+        # Register strategy in StrategyRouter routing index
+        from app.strategies.routing.schemas import CandidateStrategy
+        from app.strategies.routing.router import strategy_router
+        
+        tf_str = "15m"
+        if strategy.parameters:
+            try:
+                params = json.loads(strategy.parameters)
+                tf_str = params.get("timeframe", "15m")
+            except Exception:
+                tf_str = "15m"
+
+        candidate = CandidateStrategy(
+            strategy_id=strategy.id,
+            strategy_version_id=version.id,
+            symbol=version.underlying,
+            timeframe=tf_str,
+            lifecycle_state=StrategyLifecycleState.MONITORING_ENTRY,
+            is_active=True
+        )
+        await strategy_router.index.register_candidate(candidate)
+
+        logger.info(
+            "strategy_activated: strategy_id=%s version_id=%s mode=%s state=MONITORING_ENTRY",
+            strategy.id, version.id, strategy.mode,
+            extra={
+                "event": "strategy_activated",
+                "strategy_id": strategy.id,
+                "strategy_version_id": version.id,
+                "mode": strategy.mode,
+                "lifecycle_state": "MONITORING_ENTRY"
+            }
+        )
+
         return await build_strategy_response(db, strategy)
 
     @staticmethod
