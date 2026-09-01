@@ -9,7 +9,7 @@ from app.core.schemas import ApiResponse
 from app.core.dependencies import get_current_user, require_admin
 from app.strategies.schemas import (
     StrategyRequest, StrategyResponse, StrategyValidationResponse,
-    StrategyValidationError
+    StrategyValidationError, AIGenerateStrategyRequest, AIGenerateStrategyResponse
 )
 from app.strategies.rules.rule_schema import StrategyRule
 from app.strategies.parser.deterministic_parser import parse_logical_expression
@@ -517,6 +517,34 @@ async def list_strategies_admin(
         success=True,
         message="Strategies retrieved successfully",
         data=res,
+        requestId=request_id
+    )
+
+@router.post("/admin/strategies/ai-generate", response_model=ApiResponse[AIGenerateStrategyResponse])
+async def generate_strategy_with_ai(
+    request: Request,
+    body: AIGenerateStrategyRequest,
+    current_admin = Depends(require_admin)
+):
+    """
+    Uses OpenAI (ChatGPT) / Google Gemini / Anthropic Claude to synthesize a structured
+    strategy definition and runs pre-save mathematical indicator and calculation checks.
+    """
+    from app.strategies.ai_generator import AIService
+
+    result = AIService.generate_strategy(
+        provider=body.provider,
+        api_key=body.apiKey,
+        model=body.model,
+        prompt=body.prompt
+    )
+
+    response_data = AIGenerateStrategyResponse(**result)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="AI strategy generated and mathematical indicators verified successfully",
+        data=response_data,
         requestId=request_id
     )
 

@@ -378,3 +378,19 @@ class StrategyValidationError(BaseModel):
 class StrategyValidationResponse(BaseModel):
     valid: bool
     errors: List[StrategyValidationError]
+
+class AIGenerateStrategyRequest(BaseModel):
+    provider: str = Field("OPENAI", description="AI Provider: OPENAI, GEMINI, or CLAUDE")
+    apiKey: str = Field(..., description="API Key for the selected model provider")
+    model: Optional[str] = Field(None, description="Specific model override, e.g. gpt-4o, gemini-1.5-flash, claude-3-5-sonnet")
+    prompt: str = Field(..., description="Plain-English trading strategy idea or indicator description")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class AIGenerateStrategyResponse(BaseModel):
+    strategy: dict
+    indicatorAudit: dict
+    providerUsed: str
+    modelUsed: str

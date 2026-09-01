@@ -13,6 +13,9 @@ export const strategyApi = {
   validateStrategy: (payload) =>
     axiosClient.post('/strategies/validate', payload),
 
+  generateWithAI: (payload) =>
+    axiosClient.post('/admin/strategies/ai-generate', payload),
+
   activatePaper: (id) =>
     axiosClient.post(`/admin/strategies/${id}/activate-paper`),
 

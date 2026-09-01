@@ -1,16 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Play, Square, Activity, RefreshCw, Plus, Layers, ArrowUpRight, CheckCircle2, Clock, AlertTriangle, Zap, Eye, Search, Filter } from 'lucide-react';
+import { Play, Square, Activity, RefreshCw, Plus, Layers, ArrowUpRight, CheckCircle2, Clock, AlertTriangle, Zap, Eye, Search, Filter, Sparkles } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { executionApi } from '../../api/executionApi';
 import { Pagination } from '../common/Pagination';
+import { AIStrategyGeneratorModal } from './AIStrategyGeneratorModal';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
 export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNavigateToBatches }) => {
+  const { user } = useAuth();
   const { addToast } = useToast();
   const [strategies, setStrategies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
+  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
 
   // Filters & Pagination
   const [search, setSearch] = useState('');
@@ -18,6 +22,8 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(6);
+
+  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
 
   const loadStrategies = async () => {
     setLoading(true);
@@ -106,11 +112,30 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
             Monitor active algorithmic strategies, state machine lifecycles, and copy-trading execution fleets.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           <button onClick={loadStrategies} disabled={loading} className="btn btn-secondary">
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             <span>Refresh Fleet</span>
           </button>
+
+          {/* AI Generator Button (Role-Gated for Admin & Super Admin) */}
+          {isAdmin && (
+            <button
+              onClick={() => setIsAIModalOpen(true)}
+              className="btn btn-emerald"
+              style={{
+                background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)',
+                color: '#fff',
+                fontWeight: 700,
+                border: 'none',
+                boxShadow: '0 0 15px rgba(6, 182, 212, 0.4)',
+              }}
+            >
+              <Sparkles size={16} />
+              <span>🤖 AI Strategy Generator</span>
+            </button>
+          )}
+
           <button onClick={onNavigateToBuilder} className="btn btn-primary">
             <Plus size={16} />
             <span>+ Build New Strategy</span>
@@ -200,7 +225,7 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
           </div>
         ) : strategies.length === 0 ? (
           <div className="glass-panel" style={{ padding: '40px', textAlign: 'center', gridColumn: '1 / -1', color: 'var(--text-muted)' }}>
-            No strategies found matching filters. Click <strong>"+ Build New Strategy"</strong> to generate one.
+            No strategies found matching filters. Click <strong>"🤖 AI Strategy Generator"</strong> to create one in seconds.
           </div>
         ) : (
           strategies.map((s) => (
@@ -320,6 +345,13 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
           pageSizeOptions={[3, 6, 12, 24]}
         />
       </div>
+
+      {/* AI Strategy Generator Modal */}
+      <AIStrategyGeneratorModal
+        isOpen={isAIModalOpen}
+        onClose={() => setIsAIModalOpen(false)}
+        onStrategyCreated={() => loadStrategies()}
+      />
     </div>
   );
 };
