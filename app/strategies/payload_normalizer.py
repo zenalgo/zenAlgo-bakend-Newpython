@@ -1,6 +1,7 @@
 from typing import Dict, Any, List, Optional
 from decimal import Decimal
 import uuid
+import re
 
 from app.execution.enums import (
     ExecutionMode,
@@ -39,7 +40,7 @@ class FrontendPayloadNormalizer:
                 opt_type = str(raw_leg.get("optionType", "CE")).upper()
 
                 # Parse strike policy and offset
-                strike_selection_str = str(raw_leg.get("strikeSelection", "ATM")).upper()
+                strike_selection_str = str(raw_leg.get("strikeSelection", raw_leg.get("strike", "ATM"))).upper()
                 strike_policy = OptionStrikePolicy.ATM
                 if "OTM" in strike_selection_str:
                     strike_policy = OptionStrikePolicy.OTM
@@ -48,13 +49,29 @@ class FrontendPayloadNormalizer:
                 elif "CUSTOM" in strike_selection_str:
                     strike_policy = OptionStrikePolicy.CUSTOM
 
-                offset = Decimal(str(raw_leg.get("strikeOffset", raw_leg.get("offset", "0.0"))))
+                offset_str = str(raw_leg.get("strikeOffset", raw_leg.get("offset", raw_leg.get("strike", "0.0"))))
+                match = re.search(r"(\d+(?:\.\d+)?)", offset_str) if ("+" in offset_str or "-" in offset_str or "OFFSET" in offset_str.upper() or "POINT" in offset_str.upper()) else None
+                if match:
+                    offset = Decimal(match.group(1))
+                else:
+                    try:
+                        clean_num = re.sub(r"[^\d.]", "", offset_str)
+                        offset = Decimal(clean_num) if clean_num else Decimal("0.0")
+                    except Exception:
+                        offset = Decimal("0.0")
+
                 expiry_str = str(raw_leg.get("expiry", "CURRENT_MONTHLY")).upper()
                 expiry_policy = OptionExpiryPolicy.CURRENT_MONTHLY if "MONTH" in expiry_str else OptionExpiryPolicy.CURRENT_WEEKLY
 
+                qty = raw_leg.get("lots", raw_leg.get("quantity", 1))
+                try:
+                    lots = int(re.sub(r"[^\d]", "", str(qty))) if str(qty).strip() else 1
+                except Exception:
+                    lots = 1
+
                 normalized_legs.append(LogicalLeg(
                     leg_id=raw_leg.get("legId", idx + 1),
-                    sequence=raw_leg.get("sequence", idx + 1),
+                    sequence=raw_leg.get("sequence", raw_leg.get("legId", idx + 1)),
                     role=role,
                     side=side,
                     segment="OPT",
@@ -62,7 +79,7 @@ class FrontendPayloadNormalizer:
                     strike_policy=strike_policy,
                     strike_offset=offset,
                     expiry_policy=expiry_policy,
-                    lots=int(raw_leg.get("lots", 1)),
+                    lots=lots,
                     order_type=OrderType.MARKET
                 ))
             return normalized_legs
@@ -116,15 +133,28 @@ class FrontendPayloadNormalizer:
         correlation_id = f"EXEC-SIG-{signal_id}-USR-{user_id}-{str(uuid.uuid4())[:8]}"
         logical_legs = cls.normalize_strategy_legs(payload)
 
-        # Scale lots by risk-approved multiplier and adjust option_type by direction
-        for leg in logical_legs:
-            leg.lots = approved_lots
-            if leg.option_type == "CE" and direction.upper() == "SELL":
-                leg.option_type = "PE"
+        # Scale lots by risk-approved multiplier and adjust option_type by direction (only for single-leg)
+        if len(logical_legs) == 1:
+            for leg in logical_legs:
+                leg.lots = approved_lots
+                if leg.option_type == "CE" and direction.upper() == "SELL":
+                    leg.option_type = "PE"
+        else:
+            for leg in logical_legs:
+                leg.lots = approved_lots
 
         exec_cfg = payload.get("execution", {})
-        slippage = Decimal(str(exec_cfg.get("slippage", "0.5")))
-        timeout = int(exec_cfg.get("orderTimeout", 30))
+        slip_raw = str(exec_cfg.get("slippage", "0.5")).replace("%", "").strip()
+        try:
+            slippage = Decimal(slip_raw) if slip_raw else Decimal("0.5")
+        except Exception:
+            slippage = Decimal("0.5")
+
+        timeout_raw = str(exec_cfg.get("orderTimeout", 30)).strip()
+        try:
+            timeout = int(re.sub(r"[^\d]", "", timeout_raw)) if timeout_raw else 30
+        except Exception:
+            timeout = 30
 
         return ExecutionRequest(
             user_id=user_id,

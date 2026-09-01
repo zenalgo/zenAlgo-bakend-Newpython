@@ -361,21 +361,31 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
             request.underlying = u_upper
     if request.riskManagement and not request.capital:
         cap = request.riskManagement.capitalAllocationPerTrade
-        if cap is not None:
+        if cap is not None and str(cap).strip():
             try:
-                request.capital = Decimal(str(cap).strip())
+                cap_clean = re.sub(r"[^\d.]", "", str(cap).strip())
+                request.capital = Decimal(cap_clean) if cap_clean else Decimal("100000.00")
             except Exception:
                 request.capital = Decimal("100000.00")
     if not request.capital:
         request.capital = Decimal("100000.00")
+
+    if not request.tradingType:
+        if request.tradingHorizon and str(request.tradingHorizon).upper() in ["MONTHLY", "POSITIONAL", "SWING", "DELIVERY"]:
+            request.tradingType = "DELIVERY"
+        else:
+            request.tradingType = "INTRADAY"
         
+    entry_time = "09:15"
+    exit_time = "15:15"
     if request.schedule:
-        if not request.entrySetting:
-            request.entrySetting = StrategyEntrySettingRequest(entryTime=request.schedule.entryFrom)
+        if request.schedule.entryFrom and str(request.schedule.entryFrom).strip():
+            entry_time = str(request.schedule.entryFrom).strip()
+        if request.schedule.forcedExitTime and str(request.schedule.forcedExitTime).strip():
+            exit_time = str(request.schedule.forcedExitTime).strip()
+
         if not request.entryDays:
-            source_days = request.schedule.applicableDays
-            if not source_days and request.schedule.entryDays:
-                source_days = request.schedule.entryDays
+            source_days = request.schedule.applicableDays or request.schedule.entryDays
             if not source_days:
                 source_days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
@@ -384,28 +394,50 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
                 "Thu": "THURSDAY", "Fri": "FRIDAY", "Sat": "SATURDAY", "Sun": "SUNDAY"
             }
             request.entryDays = [day_map.get(d, d.upper()) for d in source_days]
-        if not request.exitSetting:
-            request.exitSetting = StrategyExitSettingRequest(
-                exitTime=request.schedule.forcedExitTime,
-                profitMtmType="NONE",
-                stopLossMtmType="NONE"
-            )
+
+    if not request.entrySetting:
+        request.entrySetting = StrategyEntrySettingRequest(entryTime=entry_time)
+    if not request.exitSetting:
+        request.exitSetting = StrategyExitSettingRequest(
+            exitTime=exit_time,
+            profitMtmType="NONE",
+            stopLossMtmType="NONE"
+        )
             
     # Extract options legs if not already explicitly provided in request.legs
     if not request.legs:
-        # Check options block
         options_dict = request.options or (request.scriptExecutionPayload.get("options") if isinstance(request.scriptExecutionPayload, dict) else None) or {}
         explicit_legs = options_dict.get("legs", [])
         if explicit_legs and isinstance(explicit_legs, list):
             mapped_legs = []
             for idx, raw_leg in enumerate(explicit_legs):
-                seq = int(raw_leg.get("sequence", idx + 1))
+                seq = int(raw_leg.get("sequence", raw_leg.get("legId", idx + 1)))
                 seg = str(raw_leg.get("segment", "OPT")).upper()
                 side = str(raw_leg.get("action", raw_leg.get("side", "BUY"))).upper()
-                strike_sel = str(raw_leg.get("strikeSelection", "ATM")).upper()
-                strike_val = Decimal(str(raw_leg.get("strikeOffset", raw_leg.get("strikeValue", 0.0))))
-                exp_str = str(raw_leg.get("expiry", "MONTHLY" if "month" in str(raw_leg.get("expiry", "")).lower() else "WEEKLY")).upper()
-                lots = int(raw_leg.get("lots", 1))
+                
+                strike_str = str(raw_leg.get("strike", "")).upper()
+                if raw_leg.get("strikeSelection"):
+                    strike_sel = str(raw_leg["strikeSelection"]).upper()
+                elif "OTM" in strike_str:
+                    strike_sel = "OTM"
+                elif "ITM" in strike_str:
+                    strike_sel = "ITM"
+                elif "ATM" in strike_str:
+                    strike_sel = "ATM"
+                else:
+                    strike_sel = str(options_dict.get("strikeSelection", "ATM")).upper()
+
+                offset_match = re.search(r"(\d+(?:\.\d+)?)", str(raw_leg.get("strikeOffset", raw_leg.get("strikeValue", strike_str))))
+                strike_val = Decimal(offset_match.group(1)) if offset_match else Decimal("0.00")
+                
+                raw_exp = str(raw_leg.get("expiry", options_dict.get("expiry", ""))).upper()
+                exp_str = "MONTHLY" if "MONTH" in raw_exp else "WEEKLY"
+                
+                qty = raw_leg.get("quantity", raw_leg.get("lots", 1))
+                try:
+                    lots = int(re.sub(r"[^\d]", "", str(qty))) if str(qty).strip() else 1
+                except Exception:
+                    lots = 1
                 
                 mapped_legs.append(StrategyLegRequest(
                     sequence=seq,
