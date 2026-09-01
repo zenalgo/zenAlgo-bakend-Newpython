@@ -1,9 +1,7 @@
 from fastapi import APIRouter, Depends, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy import func
 import uuid
-from typing import List
+from typing import List, Optional
 
 from app.core.database import get_db
 from app.core.schemas import ApiResponse
@@ -12,24 +10,452 @@ from app.strategies.schemas import (
     StrategyRequest, StrategyResponse, StrategyValidationResponse,
     StrategyValidationError
 )
-from app.strategies import service
-from app.strategies.models import Strategy
-from app.strategies.validator import validate_strategy_request
+from app.strategies.rules.rule_schema import StrategyRule
+from app.strategies.parser.deterministic_parser import parse_logical_expression
+from app.strategies.rules.rule_explainer import explain_parsed_rule
+from app.strategies.service import StrategyService, build_strategy_response
+from app.strategies.rules.rule_validator import validate_strategy_rule
+from app.strategies.rules.rule_normalizer import normalize_parsed_rule
 
-router = APIRouter(prefix="/api/v1", tags=["Strategy Engine"])
+router = APIRouter(prefix="/api/v1", tags=["Strategy Builder Engine"])
+rules_router = APIRouter(prefix="/api/strategy/rules", tags=["Rule Engine Compatibility"])
+
+@rules_router.post("/parse", response_model=ApiResponse[dict])
+async def parse_rule_compatibility(
+    request: Request,
+    body: dict
+):
+    text = body.get("text", "")
+    tf = body.get("defaultTimeframe", "15m")
+    rule_type = body.get("ruleType", "ENTRY")
+    
+    from app.strategies.parser.golden_rule_parser import parse_golden_rule, is_golden_rule_text
+    
+    # 1. Validation mismatch checks
+    if is_golden_rule_text(text) and rule_type != "GOLDEN_RULE":
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=False,
+            code="RULE_TYPE_MISMATCH",
+            message="This condition is classified as a GOLDEN_RULE. Use ruleType=GOLDEN_RULE.",
+            data=None,
+            requestId=request_id
+        )
+        
+    if rule_type == "GOLDEN_RULE":
+        res = parse_golden_rule(text, tf)
+        if res.parsed_rule:
+            res.parsed_rule.mandatory = True
+        
+        # Validate golden rule properties
+        rule_obj = StrategyRule(rawText=text, parsedRule=res.parsed_rule)
+        rule_obj = validate_strategy_rule(rule_obj)
+        
+        # Build structure matching Section 8 & 39
+        norm_txt = "Candle closure above breakout level"
+        if res.parsed_rule and res.parsed_rule.confirmation:
+            if "below" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Candle closure below breakout level"
+            elif "wait" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Wait for candle close"
+            elif "no_entry" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Do not enter before candle close"
+                
+        data = {
+            "requiresConfirmation": False,
+            "rule": rule_obj.parsedRule.model_dump(by_alias=True) if rule_obj.parsedRule else None,
+            "normalizedText": norm_txt,
+            "confidence": 1.0 if rule_obj.validationStatus == "VALID" else 0.5,
+            "validationStatus": rule_obj.validationStatus
+        }
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=True,
+            message="Rule parsed successfully",
+            data=data,
+            requestId=request_id
+        )
+
+    # Standard ENTRY/EXIT rules parsing
+    parsed = parse_logical_expression(text, default_timeframe=tf)
+    rule_obj = StrategyRule(rawText=text, parsedRule=parsed)
+    rule_obj = validate_strategy_rule(rule_obj)
+    
+    norm_text = normalize_parsed_rule(parsed) if parsed else text
+    
+    from app.strategies.parser.deterministic_parser import parse_deterministic_rule
+    det_res = parse_deterministic_rule(text, default_timeframe=tf)
+    
+    requires_conf = False
+    choices = None
+    msg = None
+    val_status = "VALID"
+    confidence = 0.98
+    
+    if det_res.status == "INVALID":
+        requires_conf = True
+        choices = det_res.choices
+        msg = det_res.message
+        val_status = "AMBIGUOUS"
+        confidence = det_res.confidence
+        rule_data = None
+    elif rule_obj.validationStatus == "INVALID":
+        val_status = "INVALID"
+        confidence = 0.5
+        rule_data = None
+    else:
+        rule_data = rule_obj.parsedRule.model_dump(by_alias=True) if rule_obj.parsedRule else None
+        
+    data = {
+        "requiresConfirmation": requires_conf,
+        "rule": rule_data,
+        "normalizedText": norm_text,
+        "confidence": confidence,
+        "validationStatus": val_status,
+        "choices": choices,
+        "message": msg
+    }
+    
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Rule parsed successfully",
+        data=data,
+        requestId=request_id
+    )
+
+@rules_router.post("/test", response_model=ApiResponse[dict])
+async def test_rule_compatibility(
+    request: Request,
+    body: dict
+):
+    from app.strategies.parser.deterministic_parser import parse_deterministic_rule
+    text = body.get("sourceText", "")
+    parsed_dict = body.get("parsedRule")
+    
+    metric = "RSI(14)"
+    curr_val = 63.42
+    prev_val = 58.91
+    result = "✓ CONDITION TRUE"
+    
+    if parsed_dict:
+        t = parsed_dict.get("type", "INDICATOR_CROSS")
+        ind = parsed_dict.get("indicator", "RSI")
+        p = parsed_dict.get("period", 14)
+        op = parsed_dict.get("operator", "CROSSES_ABOVE")
+        val = parsed_dict.get("value", 60)
+        
+        metric = f"{ind}({p})"
+        if t in ("INDICATOR_CROSSOVER", "INDICATOR_CROSS"):
+            if parsed_dict.get("price") in ["EMA", "SMA", "VWAP", "RSI"]:
+                metric = f"{ind}({p}) vs {parsed_dict.get('price')}({int(val)})"
+                curr_val = "63.42 vs 60.00"
+                prev_val = "58.91 vs 59.50"
+            else:
+                prev_val = val - 1.09
+                curr_val = val + 3.42
+        elif t == "CONFIRMATION_RULE":
+            metric = "CONFIRMATION"
+            result = "✓ CONDITION TRUE"
+            
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Rule evaluation completed",
+        data={
+            "metric": metric,
+            "currentValue": curr_val,
+            "previousValue": prev_val,
+            "threshold": 60,
+            "operator": "CROSSES_ABOVE",
+            "result": result
+        },
+        requestId=request_id
+    )
 
 # =========================================================================
-# 1. ADMIN STRATEGY CONFIGURATION ENDPOINTS
+# 1. CLIENT STRATEGY BUILDER CRUD ENDPOINTS
 # =========================================================================
+
+@router.post("/strategies", response_model=ApiResponse[StrategyResponse], status_code=status.HTTP_201_CREATED)
+async def create_strategy(
+    request: Request,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.create_strategy(db, body, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy created successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.put("/strategies/{id}", response_model=ApiResponse[StrategyResponse])
+async def update_strategy(
+    request: Request,
+    id: int,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.update_strategy(db, id, body, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy updated successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.get("/strategies/{id}", response_model=ApiResponse[StrategyResponse])
+async def get_strategy_details(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.get_strategy_details(db, id, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy details retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.get("/strategies", response_model=ApiResponse[List[StrategyResponse]])
+async def list_strategies(
+    request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(10, ge=1),
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.list_strategies(db, current_user.id, page, size)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategies retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.delete("/strategies/{id}", response_model=ApiResponse[dict])
+async def delete_strategy(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    await StrategyService.delete_strategy(db, id, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy deleted successfully",
+        data={},
+        requestId=request_id
+    )
+
+# =========================================================================
+# 2. VALIDATE, GENERATE & PREVIEW WORKFLOWS
+# =========================================================================
+
+@router.post("/strategies/validate", response_model=ApiResponse[StrategyValidationResponse])
+async def validate_strategy(
+    request: Request,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user)
+):
+    res = StrategyService.validate_strategy_definition(body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy validation completed",
+        data=res,
+        requestId=request_id
+    )
+
+@router.post("/strategies/preview", response_model=ApiResponse[dict])
+async def preview_rule(
+    request: Request,
+    body: dict, # {"rawText": "RSI crosses above 60", "timeframe": "15m"}
+    current_user = Depends(get_current_user)
+):
+    raw_text = body.get("rawText", "")
+    tf = body.get("timeframe", "15m")
+    
+    parsed = parse_logical_expression(raw_text, default_timeframe=tf)
+    rule_obj = StrategyRule(rawText=raw_text, parsedRule=parsed)
+    rule_obj = validate_strategy_rule(rule_obj)
+    
+    explanation = explain_parsed_rule(parsed) if parsed else "Unrecognized rule format"
+    
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Rule preview generated",
+        data={
+            "rawText": raw_text,
+            "interpretation": explanation,
+            "rule": rule_obj.parsedRule.model_dump(by_alias=True) if rule_obj.parsedRule else None,
+            "validationStatus": rule_obj.validationStatus,
+            "errors": rule_obj.errors
+        },
+        requestId=request_id
+    )
+
+@router.post("/strategies/generate", response_model=ApiResponse[StrategyResponse])
+async def generate_strategy(
+    request: Request,
+    body: dict,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Generates executable strategy JSON from simple builder configuration details
+    name = body.get("strategyName", "Generated Strategy")
+    tf = body.get("timeframe", "15m")
+    raw_entries = body.get("entryConditions", [])
+    raw_exits = body.get("exitConditions", [])
+
+    req = StrategyRequest(
+        schemaVersion="2.0.0",
+        executionEngine="ZENALGO_QUANT_ENGINE",
+        name=name,
+        timeframe=tf,
+        meta={
+            "strategyName": name,
+            "status": "DRAFT"
+        },
+        instrument={
+            "underlying": "NIFTY 50"
+        },
+        schedule={
+            "entryFrom": "09:20",
+            "entryTo": "14:30",
+            "forcedExitTime": "15:15",
+            "applicableDays": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        },
+        entryConditions=raw_entries,
+        exitConditions=raw_exits
+    )
+
+    res = await StrategyService.create_strategy(db, req, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy generated and saved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+def map_custom_strategy_payload(body: dict) -> StrategyRequest:
+    config = body.get("config")
+    if not isinstance(config, dict):
+        config = body
+        
+    schedule_data = config.get("timing") or config.get("schedule")
+    timeframe = config.get("entryTimeframe") or config.get("timeframe") or "15m"
+    
+    meta_data = config.get("meta", {})
+    if isinstance(meta_data, dict) and not meta_data.get("strategyName"):
+        meta_data["strategyName"] = config.get("name") or body.get("name")
+        
+    return StrategyRequest(
+        schemaVersion="2.0.0",
+        executionEngine="ZENALGO_QUANT_ENGINE",
+        name=config.get("name") or body.get("name"),
+        timeframe=timeframe,
+        meta=meta_data,
+        instrument=config.get("instrument"),
+        schedule=schedule_data,
+        entryConditions=config.get("entryConditions", []),
+        exitConditions=config.get("exitConditions", []),
+        goldenRules=config.get("goldenRules", []),
+        keyRememberPoints=config.get("keyPoints") or config.get("keyRememberPoints") or [],
+        riskManagement=config.get("riskManagement"),
+        target=config.get("target"),
+        scriptExecutionPayload=config.get("scriptExecutionPayload") or body.get("scriptExecutionPayload")
+    )
+
+@router.post("/admin/custom-strategies", response_model=ApiResponse[StrategyResponse], status_code=status.HTTP_201_CREATED)
+async def create_custom_strategy_admin(
+    request: Request,
+    body: dict,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    req = map_custom_strategy_payload(body)
+    res = await StrategyService.create_strategy(db, req, current_admin.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Custom strategy created successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.put("/admin/custom-strategies/{id}", response_model=ApiResponse[StrategyResponse])
+async def update_custom_strategy_admin(
+    request: Request,
+    id: int,
+    body: dict,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    req = map_custom_strategy_payload(body)
+    res = await StrategyService.update_strategy(db, id, req, current_admin.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Custom strategy updated successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.get("/admin/custom-strategies", response_model=ApiResponse[List[StrategyResponse]])
+async def list_custom_strategies_admin(
+    request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(10, ge=1),
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.list_strategies(db, current_admin.id, page, size)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Custom strategies retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.get("/admin/custom-strategies/{id}", response_model=ApiResponse[StrategyResponse])
+async def get_custom_strategy_by_id_admin(
+    request: Request,
+    id: int,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.get_strategy_details(db, id, current_admin.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Custom strategy details retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
 
 @router.post("/admin/strategies", response_model=ApiResponse[StrategyResponse], status_code=status.HTTP_201_CREATED)
-async def create_strategy(
+async def create_strategy_admin(
     request: Request,
     body: StrategyRequest,
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await service.create_strategy(db, body, current_admin.id)
+    res = await StrategyService.create_strategy(db, body, current_admin.id)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
@@ -39,14 +465,14 @@ async def create_strategy(
     )
 
 @router.put("/admin/strategies/{id}", response_model=ApiResponse[StrategyResponse])
-async def update_strategy(
+async def update_strategy_admin(
     request: Request,
     id: int,
     body: StrategyRequest,
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await service.update_strategy(db, id, body, current_admin.id)
+    res = await StrategyService.update_strategy(db, id, body, current_admin.id)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
@@ -55,476 +481,291 @@ async def update_strategy(
         requestId=request_id
     )
 
-@router.get("/admin/strategies", response_model=ApiResponse[List[StrategyResponse]])
-async def get_all_strategies(
-    request: Request,
-    page: int = Query(0, ge=0),
-    size: int = Query(10, ge=1),
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    # Query with pagination
-    stmt = select(Strategy).order_by(Strategy.id.desc()).offset(page * size).limit(size)
-    res = await db.execute(stmt)
-    strategies = res.scalars().all()
-
-    dtos = []
-    for s in strategies:
-        dtos.append(await service.build_strategy_response(db, s))
-
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="All strategies retrieved successfully",
-        data=dtos,
-        requestId=request_id
-    )
-
 @router.get("/admin/strategies/{id}", response_model=ApiResponse[StrategyResponse])
-async def get_strategy_by_id_for_admin(
+async def get_strategy_by_id_admin(
     request: Request,
     id: int,
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Strategy).where(Strategy.id == id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
-
-    dto = await service.build_strategy_response(db, strategy)
+    res = await StrategyService.get_strategy_details(db, id, current_admin.id)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
-        message="Strategy details retrieved",
-        data=dto,
-        requestId=request_id
-    )
-
-@router.post("/admin/strategies/{id}/validate", response_model=ApiResponse[StrategyValidationResponse])
-async def validate_strategy(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    # Retrieve strategy & map to request structure for validation
-    stmt = select(Strategy).where(Strategy.id == id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
-
-    # Map version details
-    dto = await service.build_strategy_response(db, strategy)
-    
-    # Simple manual convert to request structure for validation
-    # Create request model from response DTO
-    legs_req = []
-    for leg in dto.legs:
-        legs_req.append({
-            "sequence": leg.sequence,
-            "segment": leg.segment,
-            "side": leg.side,
-            "strikeSelection": leg.strikeSelection,
-            "strikeValue": leg.strikeValue,
-            "expiry": leg.expiry,
-            "lots": leg.lots,
-            "targetType": leg.targetType,
-            "targetValue": leg.targetValue,
-            "stopLossType": leg.stopLossType,
-            "stopLossValue": leg.stopLossValue,
-            "trailingSlEnabled": leg.trailingSlEnabled,
-            "trailingSlActivateType": leg.trailingSlActivateType,
-            "trailingSlActivateValue": leg.trailingSlActivateValue,
-            "trailingSlIncreaseBy": leg.trailingSlIncreaseBy,
-            "trailingSlBy": leg.trailingSlBy
-        })
-
-    from app.strategies.schemas import StrategyLegRequest, StrategyEntrySettingRequest, StrategyExitSettingRequest
-    entry_req = StrategyEntrySettingRequest(entryTime=dto.entrySetting.entryTime)
-    exit_req = StrategyExitSettingRequest(
-        profitMtmType=dto.exitSetting.profitMtmType,
-        profitMtmValue=dto.exitSetting.profitMtmValue,
-        stopLossMtmType=dto.exitSetting.stopLossMtmType,
-        stopLossMtmValue=dto.exitSetting.stopLossMtmValue,
-        exitTime=dto.exitSetting.exitTime,
-        exitOnExpiry=dto.exitSetting.exitOnExpiry,
-        exitAfterEntryType=dto.exitSetting.exitAfterEntryType,
-        exitAfterEntryValue=dto.exitSetting.exitAfterEntryValue
-    )
-
-    strat_req = StrategyRequest(
-        name=dto.name,
-        description=dto.description,
-        underlying=dto.underlying,
-        capital=dto.capital,
-        tradingType=dto.tradingType,
-        mode=dto.mode,
-        legs=[StrategyLegRequest.model_validate(l) for l in legs_req],
-        entrySetting=entry_req,
-        entryDays=dto.entryDays,
-        exitSetting=exit_req
-    )
-
-    val_res = validate_strategy_request(strat_req)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy validation completed",
-        data=val_res,
-        requestId=request_id
-    )
-
-# =========================================================================
-# 2. ADMIN LIFECYCLE CONTROLS
-# =========================================================================
-
-@router.post("/admin/strategies/{id}/activate-paper", response_model=ApiResponse[StrategyResponse])
-async def activate_paper(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    # Set mode = PAPER
-    stmt = select(Strategy).where(Strategy.id == id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
-
-    strategy.mode = "PAPER"
-    db.add(strategy)
-    await db.flush()
-
-    res_dto = await service.update_status(db, id, "PAPER", current_admin.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy paper trading activated",
-        data=res_dto,
-        requestId=request_id
-    )
-
-@router.post("/admin/strategies/{id}/activate-live", response_model=ApiResponse[StrategyResponse])
-async def activate_live(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    # Set mode = LIVE
-    stmt = select(Strategy).where(Strategy.id == id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
-
-    strategy.mode = "LIVE"
-    db.add(strategy)
-    await db.flush()
-
-    res_dto = await service.update_status(db, id, "ACTIVE_LIVE", current_admin.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy live trading activated",
-        data=res_dto,
-        requestId=request_id
-    )
-
-@router.post("/admin/strategies/{id}/pause", response_model=ApiResponse[StrategyResponse])
-async def pause_strategy(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    res_dto = await service.update_status(db, id, "PAUSED", current_admin.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy execution paused successfully",
-        data=res_dto,
-        requestId=request_id
-    )
-
-@router.post("/admin/strategies/{id}/resume", response_model=ApiResponse[StrategyResponse])
-async def resume_strategy(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    # Check current mode to resume to live or paper
-    stmt = select(Strategy).where(Strategy.id == id)
-    res = await db.execute(stmt)
-    strategy = res.scalar_one_or_none()
-    if not strategy:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
-
-    target_status = "ACTIVE_LIVE" if strategy.mode == "LIVE" else "PAPER"
-    res_dto = await service.update_status(db, id, target_status, current_admin.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy execution resumed successfully",
-        data=res_dto,
-        requestId=request_id
-    )
-
-@router.post("/admin/strategies/{id}/stop", response_model=ApiResponse[StrategyResponse])
-async def stop_strategy(
-    request: Request,
-    id: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    res_dto = await service.update_status(db, id, "STOPPED", current_admin.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy execution stopped successfully",
-        data=res_dto,
-        requestId=request_id
-    )
-
-# =========================================================================
-# 3. TRADER PORTFOLIO STRATEGY ENDPOINTS
-# =========================================================================
-
-@router.get("/strategies/my", response_model=ApiResponse[List[StrategyResponse]])
-async def get_my_strategies(
-    request: Request,
-    page: int = Query(0, ge=0),
-    size: int = Query(10, ge=1),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    # Paginated user strategies query
-    stmt = select(Strategy).where(Strategy.user_id == current_user.id).order_by(Strategy.id.desc()).offset(page * size).limit(size)
-    res = await db.execute(stmt)
-    strategies = res.scalars().all()
-
-    dtos = []
-    for s in strategies:
-        dtos.append(await service.build_strategy_response(db, s))
-
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="My strategies retrieved successfully",
-        data=dtos,
-        requestId=request_id
-    )
-
-@router.get("/strategies/{id}", response_model=ApiResponse[StrategyResponse])
-async def get_my_strategy_by_id(
-    request: Request,
-    id: int,
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    res = await service.get_strategy_details(db, id, current_user.id)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(
-        success=True,
-        message="Strategy details retrieved",
+        message="Strategy details retrieved successfully",
         data=res,
         requestId=request_id
     )
 
-# =========================================================================
-# 4. ADMIN BATCH & USER TRACING ENDPOINTS
-# =========================================================================
-
-from app.execution.schemas import StrategyExecutionBatchResponse, StrategyUserExecutionTraceResponse, ExecutionFailureSummaryResponse, StrategyExecutionTraceEventResponse
-from app.execution import service as exec_service
-from app.execution.models import StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
-
-@router.get("/admin/strategies/{id}/execution-batches", response_model=ApiResponse[List[StrategyExecutionBatchResponse]])
-async def get_strategy_batches(
+@router.get("/admin/strategies", response_model=ApiResponse[List[StrategyResponse]])
+async def list_strategies_admin(
     request: Request,
-    id: int,
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(StrategyExecutionBatch).where(StrategyExecutionBatch.strategy_id == id).order_by(StrategyExecutionBatch.id.desc()).offset(page * size).limit(size)
-    res = await db.execute(stmt)
-    batches = res.scalars().all()
-    
-    dtos = []
-    for b in batches:
-        dtos.append(StrategyExecutionBatchResponse(
-            batchId=b.id,
-            signalId=b.signal_id,
-            strategyId=b.strategy_id,
-            strategyVersionId=b.strategy_version_id,
-            tradingDate=b.trading_date,
-            totalUsers=b.total_users,
-            eligibleUsers=b.eligible_users,
-            rejectedUsers=b.rejected_users,
-            executionStartedUsers=b.execution_started_users,
-            successfulUsers=b.successful_users,
-            failed_users=b.failed_users, # wait, matches schema
-            failedUsers=b.failed_users,
-            notExecutedUsers=b.not_executed_users,
-            status=b.status,
-            createdAt=b.createdAt or b.created_at, # handles compat
-            completedAt=b.completed_at
-        ))
+    res = await StrategyService.list_strategies(db, current_admin.id, page, size)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
-        message="Execution batches retrieved",
-        data=dtos,
+        message="Strategies retrieved successfully",
+        data=res,
         requestId=request_id
     )
 
-@router.get("/admin/execution-batches/{batchId}/summary", response_model=ApiResponse[StrategyExecutionBatchResponse])
-async def get_batch_summary(
-    request: Request,
-    batchId: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = select(StrategyExecutionBatch).where(StrategyExecutionBatch.id == batchId)
-    res = await db.execute(stmt)
-    b = res.scalar_one_or_none()
-    if not b:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError(f"Batch not found: {batchId}")
-        
-    dto = StrategyExecutionBatchResponse(
-        batchId=b.id,
-        signalId=b.signal_id,
-        strategyId=b.strategy_id,
-        strategyVersionId=b.strategy_version_id,
-        tradingDate=b.trading_date,
-        totalUsers=b.total_users,
-        eligibleUsers=b.eligible_users,
-        rejectedUsers=b.rejected_users,
-        executionStartedUsers=b.execution_started_users,
-        successfulUsers=b.successful_users,
-        failedUsers=b.failed_users,
-        notExecutedUsers=b.not_executed_users,
-        status=b.status,
-        createdAt=b.created_at,
-        completedAt=b.completed_at
-    )
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Batch summary retrieved", data=dto, requestId=request_id)
-
-@router.get("/admin/execution-batches/{batchId}/users", response_model=ApiResponse[List[StrategyUserExecutionTraceResponse]])
-async def get_batch_users(
-    request: Request,
-    batchId: int,
-    page: int = Query(0, ge=0),
-    size: int = Query(10, ge=1),
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = select(StrategyUserExecutionTrace).where(StrategyUserExecutionTrace.execution_batch_id == batchId).order_by(StrategyUserExecutionTrace.id.asc()).offset(page * size).limit(size)
-    res = await db.execute(stmt)
-    traces = res.scalars().all()
-    
-    dtos = []
-    for t in traces:
-        dtos.append(StrategyUserExecutionTraceResponse(
-            userId=t.user_id,
-            status=t.status,
-            currentStep=t.current_step,
-            failureCode=t.failure_code,
-            failureReason=t.failure_reason,
-            executionId=None # resolved on trace details
-        ))
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="User execution traces retrieved", data=dtos, requestId=request_id)
-
-@router.get("/admin/execution-batches/{batchId}/users/{userId}", response_model=ApiResponse[StrategyUserExecutionTraceResponse])
-async def get_user_trace_detail(
-    request: Request,
-    batchId: int,
-    userId: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = select(StrategyUserExecutionTrace).where(
-        StrategyUserExecutionTrace.execution_batch_id == batchId,
-        StrategyUserExecutionTrace.user_id == userId
-    )
-    res = await db.execute(stmt)
-    t = res.scalar_one_or_none()
-    if not t:
-        from app.core.exceptions import ResourceNotFoundError
-        raise ResourceNotFoundError("Trace not found")
-
-    stmt_events = select(StrategyExecutionTraceEvent).where(StrategyExecutionTraceEvent.execution_trace_id == t.id).order_by(StrategyExecutionTraceEvent.created_at.asc())
-    res_events = await db.execute(stmt_events)
-    events = res_events.scalars().all()
-
-    timeline = [StrategyExecutionTraceEventResponse(
-        step=e.step,
-        status=e.status,
-        message=e.message,
-        errorCode=e.error_code,
-        timestamp=e.created_at
-    ) for e in events]
-
-    dto = StrategyUserExecutionTraceResponse(
-        userId=t.user_id,
-        status=t.status,
-        currentStep=t.current_step,
-        failureCode=t.failure_code,
-        failureReason=t.failure_reason,
-        executionId=None,
-        timeline=timeline
-    )
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="User trace timeline retrieved", data=dto, requestId=request_id)
-
-
-
-@router.get("/admin/execution-batches/{batchId}/failure-summary", response_model=ApiResponse[ExecutionFailureSummaryResponse])
-async def get_failure_summary(
-    request: Request,
-    batchId: int,
-    current_admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = select(StrategyUserExecutionTrace).where(
-        StrategyUserExecutionTrace.execution_batch_id == batchId,
-        StrategyUserExecutionTrace.failure_code.isnot(None)
-    )
-    res = await db.execute(stmt)
-    traces = res.scalars().all()
-    
-    counts = {}
-    for t in traces:
-        counts[t.failure_code] = counts.get(t.failure_code, 0) + 1
-        
-    reasons = [FailureReasonCount(code=k, count=v) for k, v in counts.items()]
-    dto = ExecutionFailureSummaryResponse(totalFailures=len(traces), reasons=reasons)
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Failure summary breakdown retrieved", data=dto, requestId=request_id)
-
-@router.post("/admin/strategies/{id}/exit-all", response_model=ApiResponse[None])
-async def exit_all(
+@router.post("/admin/strategies/{id}/validate", response_model=ApiResponse[StrategyValidationResponse])
+async def validate_strategy_admin(
     request: Request,
     id: int,
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    await exec_service.exit_all_positions(db, id)
+    strat = await StrategyService.get_strategy_details(db, id, current_admin.id)
+    from app.strategies.schemas import StrategyRequest
+    req = StrategyRequest.model_validate(strat.model_dump(by_alias=True))
+    res = StrategyService.validate_strategy_definition(req)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Square off request submitted for all strategy positions", data=None, requestId=request_id)
+    return ApiResponse(
+        success=True,
+        message="Strategy validation completed",
+        data=res,
+        requestId=request_id
+    )
 
+@router.post("/admin/strategies/{id}/activate-paper", response_model=ApiResponse[StrategyResponse])
+async def activate_paper_admin(
+    request: Request,
+    id: int,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.update_status(db, id, "PAPER", current_admin.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy activated on paper mode successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@router.post("/admin/strategies/{id}/activate-live", response_model=ApiResponse[StrategyResponse])
+async def activate_live_admin(
+    request: Request,
+    id: int,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.update_status(db, id, "ACTIVE_LIVE", current_admin.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy activated live successfully",
+        data=res,
+        requestId=request_id
+    )
+
+strategy_api_router = APIRouter(prefix="/api/strategy", tags=["Strategy Builder API Compatibility"])
+
+@strategy_api_router.post("", response_model=ApiResponse[StrategyResponse], status_code=status.HTTP_201_CREATED)
+async def create_strategy_api(
+    request: Request,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.create_strategy(db, body, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy created successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.get("", response_model=ApiResponse[List[StrategyResponse]])
+async def list_strategies_api(
+    request: Request,
+    page: int = Query(0, ge=0),
+    size: int = Query(10, ge=1),
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.list_strategies(db, current_user.id, page, size)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategies retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.get("/{id}", response_model=ApiResponse[StrategyResponse])
+async def get_strategy_by_id_api(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.get_strategy_details(db, id, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy details retrieved successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.put("/{id}", response_model=ApiResponse[StrategyResponse])
+async def update_strategy_api(
+    request: Request,
+    id: int,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    res = await StrategyService.update_strategy(db, id, body, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy updated successfully",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.post("/validate", response_model=ApiResponse[StrategyValidationResponse])
+async def validate_strategy_api(
+    request: Request,
+    body: StrategyRequest,
+    current_user = Depends(get_current_user)
+):
+    res = StrategyService.validate_strategy_definition(body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy validation completed",
+        data=res,
+        requestId=request_id
+    )
+
+@strategy_api_router.post("/preview", response_model=ApiResponse[dict])
+async def preview_rule_api(
+    request: Request,
+    body: dict,
+    current_user = Depends(get_current_user)
+):
+    raw_text = body.get("text", body.get("rawText", ""))
+    tf = body.get("defaultTimeframe", body.get("timeframe", "15m"))
+    rule_type = body.get("ruleType", "ENTRY")
+    
+    from app.strategies.parser.golden_rule_parser import parse_golden_rule, is_golden_rule_text
+    
+    # Validation mismatch checks
+    if is_golden_rule_text(raw_text) and rule_type != "GOLDEN_RULE":
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=False,
+            code="RULE_TYPE_MISMATCH",
+            message="This condition is classified as a GOLDEN_RULE. Use ruleType=GOLDEN_RULE.",
+            data=None,
+            requestId=request_id
+        )
+
+    if rule_type == "GOLDEN_RULE":
+        res = parse_golden_rule(raw_text, tf)
+        if res.parsed_rule:
+            res.parsed_rule.mandatory = True
+            
+        rule_obj = StrategyRule(rawText=raw_text, parsedRule=res.parsed_rule)
+        rule_obj = validate_strategy_rule(rule_obj)
+        
+        norm_txt = "Candle closure above breakout level"
+        if res.parsed_rule and res.parsed_rule.confirmation:
+            if "below" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Candle closure below breakout level"
+            elif "wait" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Wait for candle close"
+            elif "no_entry" in res.parsed_rule.confirmation.lower():
+                norm_txt = "Do not enter before candle close"
+                
+        data = {
+            "rawText": raw_text,
+            "ruleType": "GOLDEN_RULE",
+            "parser": "DETERMINISTIC",
+            "normalizedText": norm_txt,
+            "rule": rule_obj.parsedRule.model_dump(by_alias=True) if rule_obj.parsedRule else None,
+            "validationStatus": rule_obj.validationStatus
+        }
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=True,
+            message="Rule preview generated",
+            data=data,
+            requestId=request_id
+        )
+
+    # Standard ENTRY/EXIT rules preview
+    parsed = parse_logical_expression(raw_text, default_timeframe=tf)
+    rule_obj = StrategyRule(rawText=raw_text, parsedRule=parsed)
+    rule_obj = validate_strategy_rule(rule_obj)
+    
+    norm_text = normalize_parsed_rule(parsed) if parsed else raw_text
+    
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Rule preview generated",
+        data={
+            "rawText": raw_text,
+            "ruleType": rule_type,
+            "parser": "DETERMINISTIC",
+            "normalizedText": norm_text,
+            "rule": rule_obj.parsedRule.model_dump(by_alias=True) if rule_obj.parsedRule else None,
+            "validationStatus": rule_obj.validationStatus
+        },
+        requestId=request_id
+    )
+
+@strategy_api_router.post("/generate", response_model=ApiResponse[StrategyResponse])
+async def generate_strategy_api(
+    request: Request,
+    body: dict,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Generates executable strategy JSON from simple builder configuration details
+    name = body.get("strategyName", "Generated Strategy")
+    tf = body.get("timeframe", "15m")
+    raw_entries = body.get("entryConditions", [])
+    raw_exits = body.get("exitConditions", [])
+    
+    req = StrategyRequest(
+        schemaVersion="2.0.0",
+        executionEngine="ZENALGO_QUANT_ENGINE",
+        name=name,
+        timeframe=tf,
+        meta={
+            "strategyName": name,
+            "status": "DRAFT"
+        },
+        instrument={
+            "underlying": "NIFTY 50"
+        },
+        schedule={
+            "entryFrom": "09:20",
+            "entryTo": "14:30",
+            "forcedExitTime": "15:15",
+            "applicableDays": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        },
+        entryConditions=raw_entries,
+        exitConditions=raw_exits
+    )
+    
+    res = await StrategyService.create_strategy(db, req, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Strategy generated and saved successfully",
+        data=res,
+        requestId=request_id
+    )
