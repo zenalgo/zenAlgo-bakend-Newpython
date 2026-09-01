@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 import uuid
 from typing import List, Optional
 
