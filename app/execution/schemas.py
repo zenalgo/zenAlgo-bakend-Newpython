@@ -59,6 +59,41 @@ class ExecutionFailureSummaryResponse(BaseModel):
         "populate_by_name": True
     }
 
+class StrategyExecutionLegDto(BaseModel):
+    id: int
+    strategyLegId: Optional[int] = Field(None, alias="strategyLegId")
+    brokerOrderId: Optional[str] = Field(None, alias="brokerOrderId")
+    correlationId: Optional[str] = Field(None, alias="correlationId")
+    status: str
+    quantity: int
+    filledQuantity: int = Field(0, alias="filledQuantity")
+    price: Optional[float] = None
+    side: Optional[str] = None
+    segment: Optional[str] = None
+    tradingSymbol: Optional[str] = Field(None, alias="tradingSymbol")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class StrategyExecutionDetailResponse(BaseModel):
+    executionId: int = Field(..., alias="executionId")
+    strategyId: int = Field(..., alias="strategyId")
+    strategyVersionId: int = Field(..., alias="strategyVersionId")
+    userId: int = Field(..., alias="userId")
+    mode: str = "PAPER"
+    status: str
+    entryTime: datetime = Field(..., alias="entryTime")
+    exitTime: Optional[datetime] = Field(None, alias="exitTime")
+    realizedPnl: float = Field(0.0, alias="realizedPnl")
+    unrealizedPnl: float = Field(0.0, alias="unrealizedPnl")
+    executionLogs: Optional[str] = Field(None, alias="executionLogs")
+    legs: List[StrategyExecutionLegDto] = Field(default_factory=list)
+
+    model_config = {
+        "populate_by_name": True
+    }
+
 class UserExecutionResult(BaseModel):
     eligible: bool
     executed: bool

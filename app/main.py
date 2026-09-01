@@ -19,6 +19,7 @@ from app.wallets.router import router as wallets_router
 from app.subscriptions.router import trader_router, admin_router as sub_admin_router
 from app.strategies.router import router as strategies_router, rules_router, strategy_api_router
 from app.brokers.router import router as brokers_router
+from app.execution.router import router as execution_router
 
 app = FastAPI(
     title="ZenAlgo Platform Backend",
@@ -78,6 +79,7 @@ app.include_router(strategies_router)
 app.include_router(rules_router)
 app.include_router(strategy_api_router)
 app.include_router(brokers_router)
+app.include_router(execution_router)
 app.include_router(ws_router)
 
 @app.get("/health", tags=["Health"])

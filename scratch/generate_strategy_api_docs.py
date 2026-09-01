@@ -469,7 +469,7 @@ def build_pdf():
     # ==========================================
     # SECTION 6: ADMIN API ENDPOINTS
     # ==========================================
-    story.append(Paragraph("4. Admin Strategy & Audit Endpoints", h1_style))
+    story.append(Paragraph("4. Admin Strategy & Execution Tracking Endpoints", h1_style))
 
     admin_endpoints = [
         [Paragraph("HTTP Method & Route", table_header), Paragraph("Role Required", table_header), Paragraph("Purpose & Functionality", table_header)],
@@ -478,15 +478,19 @@ def build_pdf():
         [Paragraph("<b>POST</b> <code>/api/v1/admin/strategies</code>", table_cell), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("Admin-level strategy creation and provisioning on behalf of users.", table_cell)],
         [Paragraph("<b>POST</b> <code>/api/v1/admin/strategies/{id}/activate-paper</code>", table_cell), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("Admin override to activate any user strategy directly into PAPER trading.", table_cell)],
         [Paragraph("<b>POST</b> <code>/api/v1/admin/strategies/{id}/activate-live</code>", table_cell), Paragraph("SUPER_ADMIN", table_cell), Paragraph("Protected live activation switch. Requires environment production flag and broker approval.", table_cell)],
+        [Paragraph("<b>GET</b> <code>/api/v1/admin/execution/strategies/{id}/batches</code>", table_cell_bold), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("<b>Track how many users executed:</b> Total subscribers, eligible users, successful fills, failures.", table_cell)],
+        [Paragraph("<b>GET</b> <code>/api/v1/admin/execution/batches/{id}/traces</code>", table_cell_bold), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("<b>Track all users in batch:</b> Per-user status (EXECUTED, FAILED, REJECTED), failure code & reason.", table_cell)],
+        [Paragraph("<b>GET</b> <code>/api/v1/admin/execution/batches/{id}/failures</code>", table_cell_bold), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("<b>Aggregated failure breakdown:</b> Grouped counts (e.g. BROKER_SESSION_INVALID: 4, INSUFFICIENT_FUNDS: 2).", table_cell)],
+        [Paragraph("<b>GET</b> <code>/api/v1/admin/execution/strategies/{id}/placed-orders</code>", table_cell_bold), Paragraph("SUPER_ADMIN, ADMIN", table_cell), Paragraph("<b>Placed Paper Orders & Positions:</b> Lists executed paper trades, filled legs, execution prices, and live PnL.", table_cell)],
     ]
-    t_admin_ep = Table(admin_endpoints, colWidths=[170, 100, 270])
+    t_admin_ep = Table(admin_endpoints, colWidths=[175, 95, 270])
     t_admin_ep.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLOR_PRIMARY),
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('GRID', (0, 0), (-1, -1), 0.5, COLOR_BORDER),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLOR_BG_CODE]),
-        ('PADDING', (0, 0), (-1, -1), 4),
+        ('PADDING', (0, 0), (-1, -1), 3.5),
     ]))
     story.append(t_admin_ep)
     story.append(Spacer(1, 14))

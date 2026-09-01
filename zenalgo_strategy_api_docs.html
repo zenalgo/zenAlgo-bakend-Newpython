@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZenAlgo Strategy & Execution API Documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-card: #1e293b;
+      --bg-card-hover: #334155;
+      --text-primary: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-purple: #a78bfa;
+      --accent-rose: #f43f5e;
+      --border-color: #334155;
+      --code-bg: #0b1120;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 50px;
+      padding-bottom: 30px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+
+    .badge-primary { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
+    .badge-post { background: rgba(52, 211, 153, 0.2); color: var(--accent-green); border: 1px solid var(--accent-green); }
+    .badge-get { background: rgba(56, 189, 248, 0.2); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
+    .badge-put { background: rgba(251, 191, 36, 0.2); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
+    .badge-delete { background: rgba(244, 63, 94, 0.2); color: var(--accent-rose); border: 1px solid var(--accent-rose); }
+
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #38bdf8 0%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    .overview-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 40px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+
+    .overview-card h3 {
+      color: var(--accent-blue);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 40px 0 20px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 25px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .card:hover {
+      border-color: var(--accent-blue);
+      box-shadow: 0 8px 20px -4px rgba(56, 189, 248, 0.15);
+    }
+
+    .endpoint-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+    }
+
+    .endpoint-route {
+      font-family: 'Fira Code', monospace;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .endpoint-desc {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 16px;
+    }
+
+    .why-box {
+      background: rgba(56, 189, 248, 0.08);
+      border-left: 4px solid var(--accent-blue);
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 20px;
+      font-size: 0.92rem;
+    }
+
+    .why-box strong {
+      color: var(--accent-blue);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: #0b1120;
+      color: var(--accent-blue);
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid var(--border-color);
+      font-weight: 600;
+    }
+
+    td {
+      padding: 10px 14px;
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    tr:nth-child(even) td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    code {
+      font-family: 'Fira Code', monospace;
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      color: var(--accent-green);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.85rem;
+      color: #e2e8f0;
+      margin: 12px 0 20px;
+      line-height: 1.5;
+    }
+
+    .code-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-top: 14px;
+      margin-bottom: 4px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .tag {
+      background: rgba(167, 139, 250, 0.15);
+      color: var(--accent-purple);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .flow-diagram {
+      background: var(--code-bg);
+      padding: 20px;
+      border-radius: 8px;
+      font-family: 'Fira Code', monospace;
+      color: var(--accent-green);
+      white-space: pre;
+      overflow-x: auto;
+      border: 1px solid var(--border-color);
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge badge-primary">Developer & Admin Portal Contract</div>
+      <h1>ZenAlgo Strategy & Execution API Documentation</h1>
+      <p class="subtitle">Complete REST API contract, cURL examples, Request/Response payloads, and Admin Copy-Trading Tracing</p>
+    </header>
+
+    <div class="overview-card">
+      <h3>🚀 Architecture & End-to-End Pipeline</h3>
+      <div class="flow-diagram">[ Frontend Builder ] ---> [ POST /api/strategy (Dual Persistence) ] ---> [ State: WAITING ]
+                                         │
+                                [ POST .../activate ] ---> [ State: MONITORING_ENTRY ]
+                                         │
+                     [ Live Market Tick / 5m Candle Event ]
+                                         │
+                                [ Strategy Router ]
+                                         │
+                             [ Golden Rule Condition Met ]
+                                         │
+                             [ Signal Engine (SIG-*) ]
+                                         │
+                             [ Risk Engine Approval ]
+                                         │
+                      [ Execution Validator (Hedge Guard) ]
+                                         │
+                         [ Batch Execution Engine (PAPER) ]
+                                         │
+                       ┌─────────────────┴─────────────────┐
+                 [ Success: Position OPEN ]        [ Failure Trace Logged ]
+                                 │
+                   [ ExitEngine (2R / SL / 15:15) ]
+                                 │
+                   [ Square-Off: Position CLOSED ]</div>
+      <p style="color: var(--text-muted); font-size: 0.95rem;">
+        <strong>Idempotency & Safety:</strong> Every strategy execution is fully isolated and auditable. State transitions are strictly controlled via <code>StrategyStateManager</code>. The platform defaults to <strong>PAPER trading</strong> for maximum capital protection.
+      </p>
+    </div>
+
+    <!-- SECTION 1: STRATEGY CREATION & MANAGEMENT -->
+    <h2 class="section-title">1. Strategy Management & Builder APIs (Frontend)</h2>
+
+    <!-- ENDPOINT 1: CREATE STRATEGY -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-post">POST</span>
+        <span class="endpoint-route">/api/strategy &nbsp; or &nbsp; /api/v1/strategies &nbsp; or &nbsp; /api/v1/admin/strategies</span>
+        <span class="tag">Schema v2.0.0</span>
+      </div>
+      <p class="endpoint-desc">Creates a new strategy with dual relational persistence and complete JSON builder configuration.</p>
+      
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Triggered when the user or administrator clicks <em>"Save Strategy"</em>. It ingests the frontend payload (whether flat or wrapped with <code>config</code>), creates the root <code>Strategy</code> entity, provisions an immutable <code>StrategyVersion</code> (v1), extracts execution legs, and sets runtime state to <code>WAITING</code>.
+      </div>
+
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X POST "http://localhost:8000/api/v1/admin/strategies" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "STRAT-3XRN3N",
+    "name": "8/33 EMA Pullback",
+    "author": "Ankur",
+    "description": "Intraday trend-following strategy using 8 EMA and 33 EMA.",
+    "category": "Option Buying - Index",
+    "marketBias": "NEUTRAL_BOTH",
+    "strategyStyle": "Trend Following",
+    "tradingHorizon": "Intraday",
+    "instrumentType": "Options",
+    "underlying": "NIFTY 50",
+    "indicesArray": ["NIFTY 50"],
+    "entryTimeframe": "5m",
+    "expiryType": "Weekly",
+    "riskReward": "1:2",
+    "target": "2R",
+    "entryConditions": [
+      "EMA 8 is above EMA 33 for bullish setup",
+      "Price pulls back toward EMA 33",
+      "CALL entry when confirmation candle high breaks"
+    ],
+    "exitConditions": [
+      "Stop loss is hit",
+      "Target of 2R is hit",
+      "Forced exit at 15:15"
+    ],
+    "status": "ACTIVE_LIVE",
+    "config": {
+      "timing": {
+        "entryFrom": "09:30",
+        "forcedExitTime": "15:15",
+        "entryDays": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+      },
+      "riskManagement": {
+        "maxLossPerTrade": "₹2500",
+        "maxLossPerDay": "₹5000",
+        "maxTradesPerDay": "3"
+      },
+      "options": {
+        "strikeSelection": "ATM",
+        "legs": [{"action": "BUY", "type": "CE", "strike": "ATM", "quantity": "1"}]
+      },
+      "target": {
+        "value": "2R",
+        "scaleOutPlan": "Book 50% at 1R and trail remaining 50% using EMA 8"
+      }
+    }
+  }'</pre>
+
+      <div class="code-label">Response (201 Created):</div>
+      <pre>{
+  "success": true,
+  "message": "Strategy created successfully",
+  "data": {
+    "id": 1042,
+    "currentVersionId": 2085,
+    "name": "8/33 EMA Pullback",
+    "status": "DRAFT",
+    "mode": "PAPER",
+    "tradingType": "INTRADAY",
+    "timeframe": "5m",
+    "underlying": "NIFTY",
+    "capital": "100000.00",
+    "target": {
+      "value": "2R",
+      "scaleOutPlan": "Book 50% at 1R and trail remaining 50% using EMA 8"
+    },
+    "schedule": {
+      "entryFrom": "09:30",
+      "forcedExitTime": "15:15",
+      "entryDays": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    }
+  }
+}</pre>
+    </div>
+
+    <!-- ENDPOINT 2: GET STRATEGY DETAILS -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/strategy/{id} &nbsp; or &nbsp; /api/v1/strategies/{id}</span>
+      </div>
+      <p class="endpoint-desc">Retrieves the complete un-truncated strategy configuration with all original builder fields.</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Used by frontend edit and view screens to reload all 4 option legs, Camarilla pivots, earnings blackout windows, and risk limits.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X GET "http://localhost:8000/api/strategy/1042" -H "Authorization: Bearer YOUR_TOKEN"</pre>
+    </div>
+
+    <!-- ENDPOINT 3: ACTIVATE STRATEGY -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-post">POST</span>
+        <span class="endpoint-route">/api/strategy/{id}/activate &nbsp; or &nbsp; /api/v1/strategies/{id}/activate</span>
+      </div>
+      <p class="endpoint-desc">Deploys the strategy into autonomous paper trading.</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Triggered when user clicks <em>"Deploy Paper Trading"</em>. Moves state from <code>WAITING</code> &rarr; <code>MONITORING_ENTRY</code> and registers with the live market data router.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X POST "http://localhost:8000/api/strategy/1042/activate" -H "Authorization: Bearer YOUR_TOKEN"</pre>
+    </div>
+
+    <!-- SECTION 2: ADMIN EXECUTION & USER TRACING -->
+    <h2 class="section-title">2. Admin Execution Tracking & User Tracing APIs</h2>
+
+    <!-- TRACK 1: BATCH EXECUTION SUMMARY -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/v1/admin/execution/strategies/{strategy_id}/batches</span>
+        <span class="tag">Auditing & Analytics</span>
+      </div>
+      <p class="endpoint-desc">Track how many users executed for a strategy across different signals and trading dates.</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Answers <em>"How many subscribers executed this strategy?"</em>. Displays total subscribers, eligible users, successful fills, failures, and batch completion timestamps.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X GET "http://localhost:8000/api/v1/admin/execution/strategies/1042/batches?trading_date=2026-09-01" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"</pre>
+      <div class="code-label">Response Data:</div>
+      <pre>{
+  "success": true,
+  "message": "Execution batches retrieved successfully",
+  "data": [
+    {
+      "batchId": 5501,
+      "signalId": 1201,
+      "strategyId": 1042,
+      "strategyVersionId": 2085,
+      "tradingDate": "2026-09-01",
+      "totalUsers": 150,
+      "eligibleUsers": 142,
+      "rejectedUsers": 8,
+      "executionStartedUsers": 142,
+      "successfulUsers": 139,
+      "failedUsers": 3,
+      "notExecutedUsers": 8,
+      "status": "COMPLETED_WITH_ERRORS",
+      "createdAt": "2026-09-01T09:35:00Z",
+      "completedAt": "2026-09-01T09:35:04Z"
+    }
+  ]
+}</pre>
+    </div>
+
+    <!-- TRACK 2: TRACES IN BATCH -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/v1/admin/execution/batches/{batch_id}/traces</span>
+      </div>
+      <p class="endpoint-desc">Lists all user execution traces for a specific batch (filterable by <code>?status=FAILED</code>).</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Shows admin all users in a trade batch with their current step, status (<code>EXECUTED</code>, <code>FAILED</code>, <code>REJECTED</code>), and failure reasons.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X GET "http://localhost:8000/api/v1/admin/execution/batches/5501/traces?status=FAILED" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"</pre>
+    </div>
+
+    <!-- TRACK 3: PARTICULAR USER TRACE -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/v1/admin/execution/traces/{trace_id}</span>
+        <span class="tag">Deep Timeline Inspection</span>
+      </div>
+      <p class="endpoint-desc">Track a particular user's execution with full step-by-step event timeline.</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Deep dive for customer support and audit. Reveals exactly why a user's trade succeeded or failed across all pipeline stages.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X GET "http://localhost:8000/api/v1/admin/execution/traces/8802" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"</pre>
+      <div class="code-label">Response Data:</div>
+      <pre>{
+  "success": true,
+  "data": {
+    "userId": 88,
+    "status": "FAILED",
+    "currentStep": "BROKER_ORDER_PLACEMENT",
+    "failureCode": "BROKER_SESSION_INVALID",
+    "failureReason": "Token expired at Dhan",
+    "timeline": [
+      { "step": "INIT", "status": "SUCCESS", "message": "Execution initialized", "timestamp": "2026-09-01T09:35:00.010Z" },
+      { "step": "USER_CHECK", "status": "SUCCESS", "message": "User active and verified", "timestamp": "2026-09-01T09:35:00.050Z" },
+      { "step": "SUBSCRIPTION_CHECK", "status": "SUCCESS", "message": "Active Pro plan verified", "timestamp": "2026-09-01T09:35:00.120Z" },
+      { "step": "RISK_CHECK", "status": "SUCCESS", "message": "Risk limits approved", "timestamp": "2026-09-01T09:35:00.250Z" },
+      { "step": "BROKER_ORDER_PLACEMENT", "status": "FAILED", "message": "Broker API rejected: Token expired", "errorCode": "BROKER_SESSION_INVALID", "timestamp": "2026-09-01T09:35:01.300Z" }
+    ]
+  }
+}</pre>
+    </div>
+
+    <!-- TRACK 4: AGGREGATED FAILURES -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/v1/admin/execution/batches/{batch_id}/failures</span>
+      </div>
+      <p class="endpoint-desc">Returns grouped failure counts for an execution batch.</p>
+      <div class="code-label">Response Data:</div>
+      <pre>{
+  "success": true,
+  "data": {
+    "totalFailures": 6,
+    "reasons": [
+      { "code": "BROKER_SESSION_INVALID", "count": 4 },
+      { "code": "INSUFFICIENT_FUNDS", "count": 2 }
+    ]
+  }
+}</pre>
+    </div>
+
+    <!-- TRACK 5: PLACED PAPER ORDERS & OPEN POSITIONS -->
+    <div class="card">
+      <div class="endpoint-header">
+        <span class="badge badge-get">GET</span>
+        <span class="endpoint-route">/api/v1/admin/execution/strategies/{strategy_id}/placed-orders</span>
+        <span class="tag">Live Positions & Fills</span>
+      </div>
+      <p class="endpoint-desc">Fetches all placed paper & live trades, filled option legs, execution prices, and real-time PnL.</p>
+      <div class="why-box">
+        <strong>Why We Use This API:</strong> Powers the frontend <em>"Placed Orders & Open Paper Positions"</em> screen. Shows the user their executed trade legs, fill prices, quantities, and whether the position is currently <code>RUNNING</code> or <code>SQUARED_OFF</code>.
+      </div>
+      <div class="code-label">Request cURL:</div>
+      <pre>curl -X GET "http://localhost:8000/api/v1/admin/execution/strategies/3771/placed-orders" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"</pre>
+      <div class="code-label">Response Data:</div>
+      <pre>{
+  "success": true,
+  "data": [
+    {
+      "executionId": 874,
+      "strategyId": 3771,
+      "strategyVersionId": 3788,
+      "userId": 6011,
+      "mode": "PAPER",
+      "status": "RUNNING",
+      "entryTime": "2026-09-01T09:35:00Z",
+      "exitTime": null,
+      "realizedPnl": 0.0,
+      "unrealizedPnl": 520.0,
+      "legs": [
+        {
+          "id": 883,
+          "strategyLegId": 101,
+          "brokerOrderId": "MOCK-ORD-883",
+          "correlationId": "EXEC-SIG-2093-LEG-1",
+          "status": "FILLED",
+          "quantity": 50,
+          "filledQuantity": 50,
+          "price": 100.0,
+          "tradingSymbol": "NIFTY26SEP25050CE"
+        }
+      ]
+    }
+  ]
+}</pre>
+    </div>
+
+    <!-- SECTION 3: REFERENCE STRATEGY MATRIX -->
+    <h2 class="section-title">3. Supported Reference Strategy Payloads</h2>
+    
+    <table>
+      <thead>
+        <tr>
+          <th>Strategy Archetype</th>
+          <th>Underlying & TF</th>
+          <th>Leg Structure</th>
+          <th>Exit & Risk Rules</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Strategy 1: EMA 8/33 Pullback</strong><br><span style="color: var(--text-muted); font-size: 0.8rem;">Trend Following Option Buying</span></td>
+          <td>NIFTY 50<br>5m | Weekly</td>
+          <td>Single-leg dynamic <code>ATM BUY CE / BUY PE</code></td>
+          <td>Target: <code>2R</code><br>Partial 50% exit at 1R<br>Forced Exit: <code>15:15</code></td>
+        </tr>
+        <tr>
+          <td><strong>Strategy 2: RSI 60 Alert Candle</strong><br><span style="color: var(--text-muted); font-size: 0.8rem;">Breakout Option Buying</span></td>
+          <td>NIFTY 50<br>15m | Weekly</td>
+          <td>Single-leg <code>ATM BUY CE / BUY PE</code> on candle breakout</td>
+          <td>Target: <code>Alert Candle Range</code><br>Trailing Stop Loss enabled</td>
+        </tr>
+        <tr>
+          <td><strong>Strategy 3: Camarilla S3/R3 Reversal</strong><br><span style="color: var(--text-muted); font-size: 0.8rem;">Hedged 4-Leg Option Selling</span></td>
+          <td>RELIANCE<br>Daily | Monthly</td>
+          <td><strong>All 4 Legs:</strong><br>• Short CE (ATM)<br>• Long CE (+200 Hedge)<br>• Short PE (ATM)<br>• Long PE (-200 Hedge)</td>
+          <td>Target: <code>2.5% Premium Decay</code><br>SL: R3/S3 breach<br>Simultaneous 4-leg square-off</td>
+        </tr>
+      </tbody>
+    </table>
+
+  </div>
+</body>
+</html>
