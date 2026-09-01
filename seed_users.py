@@ -16,13 +16,13 @@ async def seed_initial_users():
         users_to_seed = [
             {
                 "email": "superadmin@trading.com",
-                "password": "SuperAdminPass123!",
+                "password": "superadmin123",
                 "role": UserRole.SUPER_ADMIN,
                 "referral": "REF-ADMIN001"
             },
             {
                 "email": "superadmin@example.com",
-                "password": "Z3nAlG0_Sup3rAdm1n_2026!",
+                "password": "superadmin123",
                 "role": UserRole.SUPER_ADMIN,
                 "referral": "REF-SUPERADM"
             },
