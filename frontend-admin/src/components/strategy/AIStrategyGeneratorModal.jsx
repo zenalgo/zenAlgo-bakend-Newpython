@@ -82,12 +82,13 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
         mode: generatedStrategy.mode || 'PAPER',
         entrySetting: {
           entryType: 'INTRADAY',
-          reEntryLimit: 2,
+          entryTime: '09:15',
+          reEntryLimit: 3,
         },
         entryDays: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'],
         exitSetting: {
           exitType: 'TIME_BASED',
-          exitTime: '15:15:00',
+          exitTime: '15:15',
         },
         entryConditions: (generatedStrategy.entryRules || []).map((r) => ({
           rawText: r,
@@ -95,17 +96,19 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
         exitConditions: (generatedStrategy.exitRules || []).map((r) => ({
           rawText: r,
         })),
-        legs: generatedStrategy.legs || [
-          {
-            instrumentType: 'OPT',
-            side: 'BUY',
-            positionType: 'CALL',
-            strikeSelection: 'ATM',
-            quantity: 50,
-            stopLossPoints: 30.0,
-            targetPoints: 60.0,
-          },
-        ],
+        legs: (generatedStrategy.legs || []).map((l, idx) => ({
+          sequence: idx + 1,
+          segment: 'OPT',
+          expiry: 'WEEKLY',
+          lots: 1,
+          instrumentType: 'OPT',
+          side: l.side || 'BUY',
+          positionType: l.positionType || 'CALL',
+          strikeSelection: l.strikeSelection || 'ATM',
+          quantity: l.quantity || 50,
+          stopLossPoints: l.stopLossPoints || 30.0,
+          targetPoints: l.targetPoints || 60.0,
+        })),
       };
 
       const res = await strategyApi.createStrategy(payload);
