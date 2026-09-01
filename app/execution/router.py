@@ -313,8 +313,6 @@ async def get_user_executions(
                 executionId=None
             )
         )
-        for t in traces
-    ]
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
