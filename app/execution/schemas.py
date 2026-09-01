@@ -16,6 +16,10 @@ class StrategyExecutionTraceEventResponse(BaseModel):
 class StrategyUserExecutionTraceResponse(BaseModel):
     traceId: Optional[int] = Field(None, alias="traceId")
     userId: int = Field(..., alias="userId")
+    userEmail: Optional[str] = Field(None, alias="userEmail")
+    userName: Optional[str] = Field(None, alias="userName")
+    userRole: Optional[str] = Field(None, alias="userRole")
+    referralCode: Optional[str] = Field(None, alias="referralCode")
     status: str
     currentStep: str = Field(..., alias="currentStep")
     failureCode: Optional[str] = Field(None, alias="failureCode")

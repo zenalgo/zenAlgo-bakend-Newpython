@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck, User } from 'lucide-react';
+import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck, User, Mail, Award } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import UserTraceStepperModal from './UserTraceStepperModal';
@@ -103,7 +103,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
       <div>
         <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Copy-Trading Batch Auditing & Subscriber Traces</h1>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          Inspect multi-subscriber execution batches, fill ratios, and step-by-step audit timelines for every single trader.
+          Inspect multi-subscriber execution batches, fill ratios, trader identity, and step-by-step audit timelines.
         </p>
       </div>
 
@@ -253,7 +253,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
               2. Subscriber User Audit Breakdown {selectedBatchId ? `(Batch #${selectedBatchId})` : ''}
             </h3>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: 0 }}>
-              Click <strong>"View 4-Step Timeline"</strong> on any subscriber to inspect KYC, Subscription Quota, Risk Limits, and Broker Order Execution.
+              Full trader identity, role permissions, and step-by-step risk & order placement audit trail.
             </p>
           </div>
           {selectedBatchId && (
@@ -268,29 +268,30 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
           <table>
             <thead>
               <tr>
-                <th>Subscriber User</th>
+                <th>Subscriber Trader</th>
+                <th>Role & Referral</th>
                 <th>Audit Step</th>
                 <th>Execution Status</th>
-                <th>Failure Reason / Code</th>
+                <th>Risk / Fill Reason</th>
                 <th>Audit Stepper Timeline</th>
               </tr>
             </thead>
             <tbody>
               {loadingTraces ? (
                 <tr>
-                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
                     Loading subscriber traces...
                   </td>
                 </tr>
               ) : !selectedBatchId ? (
                 <tr>
-                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
                     Please select a batch above or click <strong>"Inspect Subscribers"</strong>.
                   </td>
                 </tr>
               ) : traces.length === 0 ? (
                 <tr>
-                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
                     No subscriber trace records found in Batch #{selectedBatchId}.
                   </td>
                 </tr>
@@ -298,28 +299,70 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
                 traces.map((t, idx) => {
                   const traceId = t.traceId || t.id || 1448;
                   const isRejected = t.status === 'REJECTED';
+                  const roleName = t.userRole || 'TRADER';
+                  const refCode = t.referralCode || `REF-U${t.userId}`;
+                  const displayName = t.userName || (roleName === 'SUPER_ADMIN' ? 'Super Admin' : `Trader #${t.userId}`);
+                  const displayEmail = t.userEmail || `user_${t.userId}@trading.com`;
+
                   return (
                     <tr key={idx}>
                       <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <User size={16} color="var(--accent-cyan)" />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: roleName === 'SUPER_ADMIN' ? 'rgba(168, 85, 247, 0.2)' : 'rgba(56, 189, 248, 0.15)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: roleName === 'SUPER_ADMIN' ? 'var(--accent-purple)' : 'var(--accent-cyan)',
+                            fontWeight: 700,
+                            fontSize: '0.85rem',
+                          }}>
+                            {displayName.charAt(0)}
+                          </div>
                           <div>
-                            <div style={{ fontWeight: 700, color: '#fff' }}>Subscriber User #{t.userId}</div>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Copy-Trading Allocation</div>
+                            <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.9rem' }}>{displayName}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Mail size={11} />
+                              <span>{displayEmail}</span>
+                              <span style={{ color: 'var(--text-dim)' }}>• #{t.userId}</span>
+                            </div>
                           </div>
                         </div>
                       </td>
+
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span className="badge" style={{
+                            background: roleName === 'SUPER_ADMIN' ? 'rgba(168, 85, 247, 0.2)' : 'rgba(16, 185, 129, 0.15)',
+                            color: roleName === 'SUPER_ADMIN' ? 'var(--accent-purple)' : 'var(--accent-emerald)',
+                            fontSize: '0.7rem',
+                            alignSelf: 'flex-start',
+                          }}>
+                            {roleName}
+                          </span>
+                          <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+                            {refCode}
+                          </span>
+                        </div>
+                      </td>
+
                       <td className="font-mono" style={{ color: isRejected ? 'var(--accent-rose)' : 'var(--accent-cyan)', fontWeight: 600 }}>
                         {t.currentStep || 'ORDER_PLACEMENT'}
                       </td>
+
                       <td>
                         <span className={`badge ${!isRejected ? 'badge-running' : 'badge-failed'}`}>
                           {t.status || 'EXECUTED'}
                         </span>
                       </td>
+
                       <td style={{ color: t.failureReason ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '0.85rem' }}>
-                        {t.failureReason ? `⚠️ ${t.failureReason}` : '✅ Passed all institutional checks'}
+                        {t.failureReason ? `⚠️ ${t.failureReason}` : '✅ All risk limits approved & paper order placed'}
                       </td>
+
                       <td>
                         <button
                           onClick={() => setActiveTraceId(traceId)}

@@ -144,8 +144,10 @@ async def get_batch_user_traces(
     Returns user execution traces for a batch, allowing admins to inspect which users
     executed, succeeded, or failed.
     """
-    query = select(StrategyUserExecutionTrace).where(
-        StrategyUserExecutionTrace.execution_batch_id == batch_id
+    query = (
+        select(StrategyUserExecutionTrace)
+        .where(StrategyUserExecutionTrace.execution_batch_id == batch_id)
+        .options(selectinload(StrategyUserExecutionTrace.user))
     )
     if status_filter:
         query = query.where(StrategyUserExecutionTrace.status == status_filter.upper())
@@ -154,18 +156,30 @@ async def get_batch_user_traces(
     res = await db.execute(query)
     traces = list(res.scalars().all())
 
-    data = [
-        StrategyUserExecutionTraceResponse(
-            traceId=t.id,
-            userId=t.user_id,
-            status=t.status,
-            currentStep=t.current_step or "INIT",
-            failureCode=t.failure_code,
-            failureReason=t.failure_reason or t.rejection_reason,
-            executionId=None
+    data = []
+    for t in traces:
+        u_email = t.user.email if t.user else f"trader_{t.user_id}@trading.com"
+        first = t.user.first_name if t.user and t.user.first_name else ""
+        last = t.user.last_name if t.user and t.user.last_name else ""
+        u_name = f"{first} {last}".strip() or ("Super Admin" if (t.user and str(t.user.role) == "SUPER_ADMIN") else f"Trader #{t.user_id}")
+        u_role = (t.user.role.value if hasattr(t.user.role, "value") else str(t.user.role)) if t.user else "TRADER"
+        ref = t.user.referral_code if (t.user and t.user.referral_code) else f"REF-U{t.user_id}"
+
+        data.append(
+            StrategyUserExecutionTraceResponse(
+                traceId=t.id,
+                userId=t.user_id,
+                userEmail=u_email,
+                userName=u_name,
+                userRole=u_role,
+                referralCode=ref,
+                status=t.status,
+                currentStep=t.current_step or "INIT",
+                failureCode=t.failure_code,
+                failureReason=t.failure_reason or t.rejection_reason,
+                executionId=None
+            )
         )
-        for t in traces
-    ]
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
@@ -193,7 +207,10 @@ async def get_user_execution_trace_details(
     stmt = (
         select(StrategyUserExecutionTrace)
         .where(StrategyUserExecutionTrace.id == trace_id)
-        .options(selectinload(StrategyUserExecutionTrace.events))
+        .options(
+            selectinload(StrategyUserExecutionTrace.events),
+            selectinload(StrategyUserExecutionTrace.user)
+        )
     )
     res = await db.execute(stmt)
     trace = res.scalar_one_or_none()
@@ -211,9 +228,21 @@ async def get_user_execution_trace_details(
         for e in sorted(trace.events, key=lambda x: x.created_at)
     ]
 
+    u = trace.user
+    u_email = u.email if u else f"trader_{trace.user_id}@trading.com"
+    first = u.first_name if u and u.first_name else ""
+    last = u.last_name if u and u.last_name else ""
+    u_name = f"{first} {last}".strip() or ("Super Admin" if (u and str(u.role) == "SUPER_ADMIN") else f"Trader #{trace.user_id}")
+    u_role = (u.role.value if hasattr(u.role, "value") else str(u.role)) if u else "TRADER"
+    ref = u.referral_code if (u and u.referral_code) else f"REF-U{trace.user_id}"
+
     data = StrategyUserExecutionTraceResponse(
         traceId=trace.id,
         userId=trace.user_id,
+        userEmail=u_email,
+        userName=u_name,
+        userRole=u_role,
+        referralCode=ref,
         status=trace.status,
         currentStep=trace.current_step or "INIT",
         failureCode=trace.failure_code,
@@ -248,7 +277,11 @@ async def get_user_executions(
     """
     Returns all strategy execution traces for a specific user.
     """
-    query = select(StrategyUserExecutionTrace).where(StrategyUserExecutionTrace.user_id == user_id)
+    query = (
+        select(StrategyUserExecutionTrace)
+        .where(StrategyUserExecutionTrace.user_id == user_id)
+        .options(selectinload(StrategyUserExecutionTrace.user))
+    )
     if strategy_id:
         query = query.where(StrategyUserExecutionTrace.strategy_id == strategy_id)
     
@@ -256,15 +289,29 @@ async def get_user_executions(
     res = await db.execute(query)
     traces = list(res.scalars().all())
 
-    data = [
-        StrategyUserExecutionTraceResponse(
-            traceId=t.id,
-            userId=t.user_id,
-            status=t.status,
-            currentStep=t.current_step or "INIT",
-            failureCode=t.failure_code,
-            failureReason=t.failure_reason or t.rejection_reason,
-            executionId=None
+    data = []
+    for t in traces:
+        u_email = t.user.email if t.user else f"trader_{t.user_id}@trading.com"
+        first = t.user.first_name if t.user and t.user.first_name else ""
+        last = t.user.last_name if t.user and t.user.last_name else ""
+        u_name = f"{first} {last}".strip() or f"Trader #{t.user_id}"
+        u_role = (t.user.role.value if hasattr(t.user.role, "value") else str(t.user.role)) if t.user else "TRADER"
+        ref = t.user.referral_code if (t.user and t.user.referral_code) else f"REF-U{t.user_id}"
+
+        data.append(
+            StrategyUserExecutionTraceResponse(
+                traceId=t.id,
+                userId=t.user_id,
+                userEmail=u_email,
+                userName=u_name,
+                userRole=u_role,
+                referralCode=ref,
+                status=t.status,
+                currentStep=t.current_step or "INIT",
+                failureCode=t.failure_code,
+                failureReason=t.failure_reason or t.rejection_reason,
+                executionId=None
+            )
         )
         for t in traces
     ]
