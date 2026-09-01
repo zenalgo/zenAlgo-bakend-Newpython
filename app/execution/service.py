@@ -250,6 +250,8 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                     broker_account = await get_active_broker_for_user(db, user_id, today)
                 except ResourceNotFoundError:
                     return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "BROKER_SESSION_NOT_FOUND", "No active broker connected for user today (Asia/Kolkata)", "BROKER_SESSION_INVALID")
+                except ValidationError as ex:
+                    return await fail_trace(db, trace, "BROKER_SESSION_CHECK", "BROKER_SESSION_EXPIRED", str(ex), "BROKER_SESSION_INVALID")
 
                 trace.broker_account_id = broker_account.id
                 trace.broker = broker_account.broker_code

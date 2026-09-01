@@ -31,8 +31,9 @@ def get_broker_config(broker_code: str) -> BrokerFormConfig:
 
 
 async def get_active_broker_for_user(db: AsyncSession, user_id: int, target_date: Optional[date] = None) -> BrokerAccount:
-    """Resolves active broker account for user for current calendar date in Asia/Kolkata."""
+    """Resolves active broker account for user for current calendar date in Asia/Kolkata, enforcing 1-day token expiry."""
     today = target_date or get_today_kolkata()
+    now_utc = datetime.now(timezone.utc)
     
     stmt = select(UserDailyBrokerConnection).where(
         UserDailyBrokerConnection.user_id == user_id,
@@ -44,11 +45,15 @@ async def get_active_broker_for_user(db: AsyncSession, user_id: int, target_date
     
     if not daily_conn:
         # Fallback to any recent active account if today's selection hasn't been set explicitly
-        stmt_fallback = select(BrokerAccount).where(BrokerAccount.user_id == user_id, BrokerAccount.status == "ACTIVE")
+        stmt_fallback = select(BrokerAccount).where(
+            BrokerAccount.user_id == user_id,
+            BrokerAccount.status == "ACTIVE",
+            BrokerAccount.expiry_time > now_utc
+        )
         res_fb = await db.execute(stmt_fallback)
         account = res_fb.scalars().first()
         if not account:
-            raise ResourceNotFoundError("No connected broker account found for user today (Asia/Kolkata)")
+            raise ResourceNotFoundError("No connected unexpired broker account found for user today (Asia/Kolkata)")
         return account
 
     stmt_account = select(BrokerAccount).where(BrokerAccount.id == daily_conn.broker_account_id)
@@ -57,8 +62,51 @@ async def get_active_broker_for_user(db: AsyncSession, user_id: int, target_date
 
     if not account:
         raise ResourceNotFoundError("Connected broker account entity not found")
-        
+
+    if account.expiry_time and account.expiry_time <= now_utc:
+        account.status = "EXPIRED"
+        daily_conn.status = "EXPIRED"
+        db.add(account)
+        db.add(daily_conn)
+        await db.flush()
+        raise ValidationError("Broker access token has expired (tokens are valid for 1 day). Please re-connect.")
+
     return account
+
+
+async def check_active_broker_session(db: AsyncSession, user_id: int) -> Dict[str, Any]:
+    """Checks if an unexpired active broker token for user exists for today (Asia/Kolkata)."""
+    today = get_today_kolkata()
+    now_utc = datetime.now(timezone.utc)
+
+    stmt = select(UserDailyBrokerConnection, BrokerAccount).join(
+        BrokerAccount, UserDailyBrokerConnection.broker_account_id == BrokerAccount.id
+    ).where(
+        UserDailyBrokerConnection.user_id == user_id,
+        UserDailyBrokerConnection.connection_date == today,
+        UserDailyBrokerConnection.status == "ACTIVE",
+        BrokerAccount.status == "ACTIVE",
+        BrokerAccount.expiry_time > now_utc
+    )
+    res = await db.execute(stmt)
+    row = res.first()
+
+    if not row:
+        return {
+            "connected": False,
+            "reason": "TOKEN_EXPIRED_OR_MISSING",
+            "message": "No active unexpired broker token found for today. Please connect your broker."
+        }
+
+    daily_conn, account = row
+    return {
+        "connected": True,
+        "brokerCode": account.broker_code,
+        "accountClientId": account.account_client_id,
+        "status": account.status,
+        "connectionDate": daily_conn.connection_date,
+        "expiryTime": account.expiry_time
+    }
 
 
 async def get_user_accounts(db: AsyncSession, user_id: int) -> List[BrokerAccount]:
@@ -76,7 +124,7 @@ async def connect_broker(
     target_date: Optional[date] = None
 ) -> BrokerAccount:
     """Validates credentials and connects user account to a broker.
-    ENFORCES EXACTLY ONE BROKER PER USER PER CALENDAR DAY (Asia/Kolkata).
+    ENFORCES EXACTLY ONE BROKER PER USER PER CALENDAR DAY (Asia/Kolkata) with 1-DAY TOKEN EXPIRY.
     """
     code = broker_code.upper()
     adapter = broker_registry.get(code)
@@ -87,9 +135,10 @@ async def connect_broker(
     if not val_res.is_valid:
         raise ValidationError(val_res.message or f"Failed to authenticate with {adapter.name}")
 
-    account_client_id = credentials.get("clientId") or credentials.get("client_id") or f"{code}_{user_id}"
+    account_client_id = credentials.get("clientId") or credentials.get("client_id") or credentials.get("dhanClientId") or f"{code}_{user_id}"
     now_utc = datetime.now(timezone.utc)
-    expiry = val_res.expiry_time or (now_utc + timedelta(days=30))
+    # Expire token after exactly 1 day (24 hours)
+    expiry = now_utc + timedelta(days=1)
 
     # 2. Concurrency Safety: Lock and check existing daily connection for today (Asia/Kolkata)
     stmt_daily = (

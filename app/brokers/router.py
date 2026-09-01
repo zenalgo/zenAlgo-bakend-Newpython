@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.core.database import get_db
 from app.core.schemas import ApiResponse
@@ -16,6 +16,7 @@ from app.brokers.schemas import (
     BrokerSessionResponse
 )
 from app.brokers import service
+from app.brokers.dhan.auth_service import dhan_auth_service
 
 router = APIRouter()
 
@@ -29,6 +30,18 @@ async def list_brokers(request: Request):
     brokers = service.list_supported_brokers()
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="Supported brokers retrieved successfully", data=brokers, requestId=request_id)
+
+@generic_router.get("/active-session", response_model=ApiResponse[dict])
+async def check_active_broker_session(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Checks if an unexpired active broker token for user exists for today (Asia/Kolkata)."""
+    data = await service.check_active_broker_session(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    msg = "Active broker session found for today" if data.get("connected") else "No active unexpired broker session found"
+    return ApiResponse(success=True, message=msg, data=data, requestId=request_id)
 
 @generic_router.get("/{broker_code}/config", response_model=ApiResponse[BrokerFormConfig])
 async def get_broker_form_config(broker_code: str, request: Request):
@@ -106,21 +119,45 @@ dhan_router = APIRouter(prefix="/api/v1/dhan", tags=["Dhan HQ Integration"])
 @dhan_router.post("/auth/individual/generate-token", response_model=ApiResponse[BrokerSessionResponse])
 async def generate_token(
     request: Request,
-    body: GenerateTokenRequest,
+    body: Dict[str, Any],
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    session = await service.create_or_update_session(db, current_user.id, body)
+    """Connects Dhan account via Client ID, PIN, and TOTP Authenticator Code (or Access Token)."""
+    client_id = body.get("dhanClientId") or body.get("clientId")
+    pin = body.get("pin")
+    totp = body.get("totp")
+    access_token = body.get("accessToken")
+
+    if pin and totp and client_id:
+        account = await dhan_auth_service.generate_token_totp(
+            db=db,
+            user_id=current_user.id,
+            client_id=client_id,
+            pin=pin,
+            totp=totp
+        )
+    elif client_id and access_token:
+        account = await dhan_auth_service.connect_direct_token(
+            db=db,
+            user_id=current_user.id,
+            client_id=client_id,
+            access_token=access_token
+        )
+    else:
+        req = GenerateTokenRequest(clientId=client_id or "DHAN_USER", accessToken=access_token or "TOKEN")
+        account = await service.create_or_update_session(db, current_user.id, req)
+
     dto = BrokerSessionResponse(
-        userId=session.user_id,
-        clientId=session.account_client_id,
-        brokerName=session.broker_code,
-        status=session.status,
-        connectionDate=session.connection_date,
-        expiryTime=session.expiry_time
+        userId=account.user_id,
+        clientId=account.account_client_id,
+        brokerName=account.broker_code,
+        status=account.status,
+        connectionDate=account.connection_date,
+        expiryTime=account.expiry_time
     )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Session token registered successfully", data=dto, requestId=request_id)
+    return ApiResponse(success=True, message="Dhan account linked successfully via TOTP login", data=dto, requestId=request_id)
 
 @dhan_router.post("/auth/individual/renew-token", response_model=ApiResponse[BrokerSessionResponse])
 async def renew_token(
@@ -143,28 +180,47 @@ async def renew_token(
 
 @dhan_router.get("/auth/initiate", response_model=ApiResponse[dict])
 @dhan_router.post("/auth/partner/generate-consent", response_model=ApiResponse[dict])
-async def initiate_dhan_consent(request: Request, current_user = Depends(get_current_user)):
+@dhan_router.post("/auth/apikey/generate-consent", response_model=ApiResponse[dict])
+async def initiate_dhan_consent(
+    request: Request,
+    body: Optional[Dict[str, Any]] = None,
+    current_user = Depends(get_current_user)
+):
+    b = body or {}
+    data = await dhan_auth_service.generate_partner_consent(
+        partner_id=b.get("partnerId") or b.get("partner_id"),
+        partner_secret=b.get("partnerSecret") or b.get("partner_secret"),
+        redirect_url=b.get("redirectUrl") or b.get("redirect_url")
+    )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
         message="Redirect user to loginUrl to complete Dhan authentication",
-        data={
-            "loginUrl": "https://auth.dhan.co/partner-login?consentId=CONSENT_MOCK123",
-            "consentId": "CONSENT_MOCK123"
-        },
+        data=data,
         requestId=request_id
     )
 
 @dhan_router.get("/auth/callback", response_model=ApiResponse[BrokerSessionResponse])
 @dhan_router.post("/auth/partner/consume-consent", response_model=ApiResponse[BrokerSessionResponse])
+@dhan_router.post("/auth/apikey/consume-consent", response_model=ApiResponse[BrokerSessionResponse])
 async def consume_dhan_consent(
     request: Request,
-    tokenId: str = "DEFAULT_TOKEN",
+    tokenId: Optional[str] = None,
+    consentId: Optional[str] = None,
+    body: Optional[Dict[str, Any]] = None,
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    req = GenerateTokenRequest(clientId="DHAN_CONSENT_USER", accessToken=tokenId)
-    session = await service.create_or_update_session(db, current_user.id, req)
+    b = body or {}
+    t_id = tokenId or b.get("tokenId") or b.get("token_id")
+    c_id = consentId or b.get("consentId") or b.get("consent_id")
+    
+    session = await dhan_auth_service.consume_partner_consent(
+        db=db,
+        user_id=current_user.id,
+        token_id=t_id,
+        consent_id=c_id
+    )
     dto = BrokerSessionResponse(
         userId=session.user_id,
         clientId=session.account_client_id,
@@ -174,7 +230,7 @@ async def consume_dhan_consent(
         expiryTime=session.expiry_time
     )
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    return ApiResponse(success=True, message="Dhan account linked successfully", data=dto, requestId=request_id)
+    return ApiResponse(success=True, message="Dhan account linked successfully via OAuth consent", data=dto, requestId=request_id)
 
 @dhan_router.post("/auth/connect-token", response_model=ApiResponse[BrokerSessionResponse])
 async def connect_token(

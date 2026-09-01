@@ -60,6 +60,6 @@ async def test_session_handling_valid_expired_missing(client: AsyncClient, setup
     db_session.add(session)
     await db_session.commit()
 
-    # Get session details - still returns details, but when executing a trade it will validate expiration
+    # Get session details - when token is expired, endpoint returns 400 Bad Request
     res_check_exp = await client.get("/api/v1/dhan/auth/session/me", headers=headers)
-    assert res_check_exp.status_code == 200
+    assert res_check_exp.status_code == 400

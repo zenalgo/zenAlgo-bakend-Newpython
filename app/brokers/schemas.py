@@ -38,6 +38,15 @@ class GenerateTokenRequest(BaseModel):
         "populate_by_name": True
     }
 
+class TotpLoginRequest(BaseModel):
+    dhanClientId: str = Field(..., alias="dhanClientId")
+    pin: str
+    totp: str
+
+    model_config = {
+        "populate_by_name": True
+    }
+
 class SetIpRequest(BaseModel):
     primaryIp: str = Field(..., alias="primaryIp")
     secondaryIp: Optional[str] = Field(None, alias="secondaryIp")
