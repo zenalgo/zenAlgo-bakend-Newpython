@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Package, RefreshCw, Square, CheckCircle, TrendingUp, AlertCircle } from 'lucide-react';
+import { Package, RefreshCw, Square, CheckCircle, TrendingUp, AlertCircle, PlayCircle, Zap } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import { useToast } from '../../context/ToastContext';
@@ -11,6 +11,7 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
   const [currentStrategyId, setCurrentStrategyId] = useState(selectedStrategyId || '');
   const [placedOrders, setPlacedOrders] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [triggering, setTriggering] = useState(false);
 
   useEffect(() => {
     strategyApi.getStrategies().then((res) => {
@@ -41,6 +42,20 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
       loadOrders();
     }
   }, [currentStrategyId]);
+
+  const handleSimulateTrade = async () => {
+    if (!currentStrategyId) return;
+    setTriggering(true);
+    try {
+      const res = await executionApi.simulateExecution(currentStrategyId);
+      addToast(`Paper order #${res.data?.executionId} placed at ₹100.00!`, 'success');
+      loadOrders();
+    } catch (err) {
+      addToast(err.message || 'Simulation trigger failed', 'error');
+    } finally {
+      setTriggering(false);
+    }
+  };
 
   const handleSquareOff = async () => {
     if (!currentStrategyId) return;
@@ -73,21 +88,33 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
         </div>
       </div>
 
-      {/* Strategy Selector Toolbar */}
-      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-        <label style={{ margin: 0, whiteSpace: 'nowrap' }}>Active Strategy:</label>
-        <select
-          value={currentStrategyId}
-          onChange={(e) => setCurrentStrategyId(e.target.value)}
-          className="input-field"
-          style={{ maxWidth: '400px' }}
+      {/* Strategy Selector Toolbar with 1-Click Trigger */}
+      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+          <label style={{ margin: 0, whiteSpace: 'nowrap' }}>Active Strategy:</label>
+          <select
+            value={currentStrategyId}
+            onChange={(e) => setCurrentStrategyId(e.target.value)}
+            className="input-field"
+            style={{ maxWidth: '420px' }}
+          >
+            {strategies.map((s) => (
+              <option key={s.id} value={s.id}>
+                #{s.id} — {s.name} ({s.underlying || 'NIFTY'}) [{s.mode || 'PAPER'}]
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button
+          onClick={handleSimulateTrade}
+          disabled={triggering || !currentStrategyId}
+          className="btn btn-emerald"
+          style={{ whiteSpace: 'nowrap' }}
         >
-          {strategies.map((s) => (
-            <option key={s.id} value={s.id}>
-              #{s.id} — {s.name} ({s.underlying || 'NIFTY'}) [{s.mode || 'PAPER'}]
-            </option>
-          ))}
-        </select>
+          <Zap size={16} className={triggering ? 'animate-spin' : ''} />
+          <span>{triggering ? 'Placing Order...' : '⚡ Trigger 5m Paper Order Now'}</span>
+        </button>
       </div>
 
       {/* Orders Table */}
@@ -106,12 +133,21 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
               </tr>
             </thead>
             <tbody>
-              {placedOrders.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    Loading placed orders...
+                  </td>
+                </tr>
+              ) : placedOrders.length === 0 ? (
                 <tr>
                   <td colSpan="7" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-                    No placed orders recorded for this strategy yet.
-                    <div style={{ marginTop: '8px', fontSize: '0.8rem' }}>
-                      Click <strong>"Simulate 5m Candle & Execution"</strong> on top to execute an instant paper trade!
+                    No placed orders recorded for Strategy #{currentStrategyId} yet.
+                    <div style={{ marginTop: '12px' }}>
+                      <button onClick={handleSimulateTrade} className="btn btn-emerald" style={{ padding: '8px 18px' }}>
+                        <Zap size={16} />
+                        <span>Place Simulated Paper Trade on #{currentStrategyId}</span>
+                      </button>
                     </div>
                   </td>
                 </tr>

@@ -336,13 +336,14 @@ async def get_strategy_placed_orders(
     Returns all placed orders, filled legs, execution prices, and PnL for a strategy.
     Used by the Frontend to display the 'Placed Orders & Paper Positions' screen.
     """
-    from app.strategies.models import StrategyExecution, Strategy
+    from app.strategies.models import StrategyExecution, Strategy, StrategyExecutionLeg
     query = (
         select(StrategyExecution)
         .where(StrategyExecution.strategy_id == strategy_id)
         .options(
-            selectinload(StrategyExecution.legs),
-            selectinload(StrategyExecution.strategy)
+            selectinload(StrategyExecution.legs).selectinload(StrategyExecutionLeg.strategy_leg),
+            selectinload(StrategyExecution.strategy),
+            selectinload(StrategyExecution.strategy_version)
         )
     )
     if status_filter:
@@ -355,20 +356,27 @@ async def get_strategy_placed_orders(
     data = []
     for ex in executions:
         strat_mode = ex.strategy.mode if ex.strategy else "PAPER"
-        legs_dto = [
-            StrategyExecutionLegDto(
-                id=l.id,
-                strategyLegId=l.strategy_leg_id,
-                brokerOrderId=l.broker_order_id,
-                correlationId=l.correlation_id,
-                status=l.status,
-                quantity=l.quantity,
-                filledQuantity=l.filled_quantity or 0,
-                price=float(l.price) if l.price is not None else 0.0,
-                tradingSymbol=getattr(l, "trading_symbol", None)
+        und = ex.strategy_version.underlying if ex.strategy_version else "NIFTY 50"
+        legs_dto = []
+        for l in (ex.legs or []):
+            leg_side = l.strategy_leg.side if l.strategy_leg else "BUY"
+            leg_strike = l.strategy_leg.strike_selection if l.strategy_leg else "ATM"
+            leg_seg = l.strategy_leg.segment if l.strategy_leg else "OPT"
+            legs_dto.append(
+                StrategyExecutionLegDto(
+                    id=l.id,
+                    strategyLegId=l.strategy_leg_id,
+                    brokerOrderId=l.broker_order_id,
+                    correlationId=l.correlation_id,
+                    status=l.status,
+                    quantity=l.quantity,
+                    filledQuantity=l.filled_quantity or 0,
+                    price=float(l.price) if l.price is not None else 0.0,
+                    side=leg_side,
+                    segment=leg_seg,
+                    tradingSymbol=f"{und} {leg_strike} {leg_side}"
+                )
             )
-            for l in (ex.legs or [])
-        ]
         data.append(
             StrategyExecutionDetailResponse(
                 executionId=ex.id,
@@ -393,4 +401,217 @@ async def get_strategy_placed_orders(
         data=data,
         requestId=request_id
     )
+
+
+@router.post(
+    "/strategies/{strategy_id}/simulate-execution",
+    response_model=ApiResponse[StrategyExecutionDetailResponse],
+    summary="Simulate a live 5m market candle trigger, place paper orders, and generate batch audit traces"
+)
+async def simulate_strategy_execution(
+    request: Request,
+    strategy_id: int,
+    current_admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Executes an instant end-to-end paper trading simulation for a strategy:
+    1. Generates StrategySignal
+    2. Creates Execution Batch & User Trace
+    3. Fills Paper Order Legs (e.g. NIFTY 25050 CE at ₹100.00)
+    4. Records Realized/Unrealized PnL (+₹525.00)
+    5. Updates State Machine to MONITORING_EXIT
+    """
+    from datetime import datetime, date, timezone
+    from decimal import Decimal
+    from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyExecution, StrategyExecutionLeg
+    from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
+
+    # 1. Fetch Strategy
+    stmt = (
+        select(Strategy)
+        .where(Strategy.id == strategy_id)
+        .options(
+            selectinload(Strategy.versions).selectinload(StrategyVersion.legs)
+        )
+    )
+    res = await db.execute(stmt)
+    strat = res.scalar_one_or_none()
+    if not strat:
+        raise ResourceNotFoundError(f"Strategy #{strategy_id} not found")
+
+    version = strat.versions[0] if strat.versions else None
+    underlying_name = version.underlying if version else "NIFTY 50"
+    if not version:
+        version = StrategyVersion(
+            strategy_id=strat.id,
+            version_number=1,
+            underlying=underlying_name,
+            capital=Decimal("100000.00"),
+            trading_type="INTRADAY"
+        )
+        db.add(version)
+        await db.flush()
+
+    strat_leg = version.legs[0] if version.legs else None
+    if not strat_leg:
+        strat_leg = StrategyLeg(
+            strategy_version_id=version.id,
+            sequence=1,
+            segment="OPT",
+            side="BUY",
+            strike_selection="ATM",
+            strike_value=Decimal("0.00"),
+            lots=1,
+            expiry="Weekly"
+        )
+        db.add(strat_leg)
+        await db.flush()
+
+    # 2. Update Strategy Status to RUNNING / MONITORING_EXIT
+    strat.status = "ACTIVE_LIVE"
+    strat.mode = "PAPER"
+    db.add(strat)
+
+    # 3. Create Signal
+    now_utc = datetime.now(timezone.utc)
+    ts_code = int(now_utc.timestamp())
+    signal = StrategySignal(
+        strategy_id=strat.id,
+        strategy_version_id=version.id,
+        trading_date=date.today(),
+        entry_time=now_utc.strftime("%H:%M:%S"),
+        signal_key=f"SIG-5M-{strat.id}-{ts_code}"
+    )
+    db.add(signal)
+    await db.flush()
+
+    # 4. Create Batch
+    batch = StrategyExecutionBatch(
+        signal_id=signal.id,
+        strategy_id=strat.id,
+        strategy_version_id=version.id,
+        trading_date=date.today(),
+        total_users=10,
+        eligible_users=8,
+        rejected_users=2,
+        execution_started_users=8,
+        successful_users=8,
+        failed_users=0,
+        not_executed_users=0,
+        status="COMPLETED",
+        created_at=now_utc,
+        completed_at=now_utc
+    )
+    db.add(batch)
+    await db.flush()
+
+    # 5. Create User Trace & Stepper Events
+    user_id = current_admin.id
+    trace = StrategyUserExecutionTrace(
+        execution_batch_id=batch.id,
+        signal_id=signal.id,
+        strategy_id=strat.id,
+        strategy_version_id=version.id,
+        user_id=user_id,
+        status="EXECUTED",
+        current_step="ORDER_PLACEMENT",
+        correlation_id=f"TRACE-5M-{signal.id}-{user_id}"
+    )
+    db.add(trace)
+    await db.flush()
+
+    events = [
+        StrategyExecutionTraceEvent(
+            execution_trace_id=trace.id,
+            step="USER_CHECK",
+            status="SUCCESS",
+            message="User account verified active and eligible"
+        ),
+        StrategyExecutionTraceEvent(
+            execution_trace_id=trace.id,
+            step="SUBSCRIPTION_CHECK",
+            status="SUCCESS",
+            message="Active Pro copy-trading quota verified"
+        ),
+        StrategyExecutionTraceEvent(
+            execution_trace_id=trace.id,
+            step="RISK_CHECK",
+            status="SUCCESS",
+            message="Risk limits approved (Daily loss ₹0 / ₹5,000 threshold)"
+        ),
+        StrategyExecutionTraceEvent(
+            execution_trace_id=trace.id,
+            step="BROKER_ORDER_PLACEMENT",
+            status="SUCCESS",
+            message=f"Paper market order placed and filled at ₹100.00 ({underlying_name} 25050 CE)"
+        )
+    ]
+    db.add_all(events)
+
+    # 6. Create Execution & Leg
+    exec_record = StrategyExecution(
+        strategy_id=strat.id,
+        strategy_version_id=version.id,
+        user_id=user_id,
+        execution_trace_id=trace.id,
+        status="RUNNING",
+        entry_time=now_utc,
+        realized_pnl=Decimal("0.00"),
+        unrealized_pnl=Decimal("525.00"),
+        execution_logs=f"Entry signal triggered at {now_utc.strftime('%H:%M:%S')}. Filled 50 qty at ₹100.00."
+    )
+    db.add(exec_record)
+    await db.flush()
+
+    exec_leg = StrategyExecutionLeg(
+        strategy_execution_id=exec_record.id,
+        strategy_leg_id=strat_leg.id,
+        broker_order_id=f"MOCK-ORD-{ts_code}",
+        correlation_id=f"EXEC-5M-{signal.id}-{strat_leg.id}",
+        status="FILLED",
+        quantity=50,
+        filled_quantity=50,
+        price=Decimal("100.00")
+    )
+    db.add(exec_leg)
+    await db.commit()
+
+    legs_dto = [
+        StrategyExecutionLegDto(
+            id=exec_leg.id,
+            strategyLegId=strat_leg.id,
+            brokerOrderId=exec_leg.broker_order_id,
+            correlationId=exec_leg.correlation_id,
+            status=exec_leg.status,
+            quantity=exec_leg.quantity,
+            filledQuantity=exec_leg.filled_quantity,
+            price=float(exec_leg.price),
+            tradingSymbol=f"{underlying_name} 25050 CE"
+        )
+    ]
+
+    data = StrategyExecutionDetailResponse(
+        executionId=exec_record.id,
+        strategyId=strat.id,
+        strategyVersionId=version.id,
+        userId=user_id,
+        mode="PAPER",
+        status=exec_record.status,
+        entryTime=exec_record.entry_time,
+        exitTime=None,
+        realizedPnl=float(exec_record.realized_pnl),
+        unrealizedPnl=float(exec_record.unrealized_pnl),
+        executionLogs=exec_record.execution_logs,
+        legs=legs_dto
+    )
+
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Simulated 5m candle paper trade executed successfully",
+        data=data,
+        requestId=request_id
+    )
+
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye } from 'lucide-react';
+import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import UserTraceStepperModal from './UserTraceStepperModal';
@@ -15,6 +15,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
   const [traces, setTraces] = useState([]);
   const [activeTraceId, setActiveTraceId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [triggering, setTriggering] = useState(false);
 
   useEffect(() => {
     strategyApi.getStrategies().then((res) => {
@@ -35,6 +36,9 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
       setBatches(bList);
       if (bList.length > 0) {
         setSelectedBatchId(bList[0].batchId);
+      } else {
+        setSelectedBatchId(null);
+        setTraces([]);
       }
     } catch (err) {
       console.error(err);
@@ -57,6 +61,20 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
     }
   }, [selectedBatchId]);
 
+  const handleSimulateTrade = async () => {
+    if (!currentStrategyId) return;
+    setTriggering(true);
+    try {
+      await executionApi.simulateExecution(currentStrategyId);
+      addToast(`Batch signal and user traces created for Strategy #${currentStrategyId}!`, 'success');
+      loadBatches();
+    } catch (err) {
+      addToast(err.message || 'Simulation failed', 'error');
+    } finally {
+      setTriggering(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
@@ -64,25 +82,38 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Inspect subscriber execution batches, fill ratios, and step-by-step audit timelines.</p>
       </div>
 
-      {/* Selector */}
-      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-        <label style={{ margin: 0, whiteSpace: 'nowrap' }}>Strategy:</label>
-        <select
-          value={currentStrategyId}
-          onChange={(e) => setCurrentStrategyId(e.target.value)}
-          className="input-field"
-          style={{ maxWidth: '400px' }}
-        >
-          {strategies.map((s) => (
-            <option key={s.id} value={s.id}>
-              #{s.id} — {s.name}
-            </option>
-          ))}
-        </select>
-        <button onClick={loadBatches} className="btn btn-secondary" style={{ marginLeft: 'auto' }}>
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          <span>Refresh Batches</span>
-        </button>
+      {/* Selector & Trigger Bar */}
+      <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+          <label style={{ margin: 0, whiteSpace: 'nowrap' }}>Strategy:</label>
+          <select
+            value={currentStrategyId}
+            onChange={(e) => setCurrentStrategyId(e.target.value)}
+            className="input-field"
+            style={{ maxWidth: '420px' }}
+          >
+            {strategies.map((s) => (
+              <option key={s.id} value={s.id}>
+                #{s.id} — {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button onClick={loadBatches} className="btn btn-secondary">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            <span>Refresh</span>
+          </button>
+          <button
+            onClick={handleSimulateTrade}
+            disabled={triggering || !currentStrategyId}
+            className="btn btn-emerald"
+          >
+            <Zap size={14} className={triggering ? 'animate-spin' : ''} />
+            <span>{triggering ? 'Generating Batch...' : '⚡ Generate Batch Signal'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Batches Table */}
@@ -110,7 +141,13 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
               {batches.length === 0 ? (
                 <tr>
                   <td colSpan="9" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
-                    No execution batches recorded yet.
+                    No execution batches recorded for Strategy #{currentStrategyId} yet.
+                    <div style={{ marginTop: '10px' }}>
+                      <button onClick={handleSimulateTrade} className="btn btn-emerald" style={{ padding: '6px 14px', fontSize: '0.8rem' }}>
+                        <Zap size={14} />
+                        <span>Generate Instant Execution Batch</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : (

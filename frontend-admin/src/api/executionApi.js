@@ -32,4 +32,8 @@ export const executionApi = {
     axiosClient.get(`/admin/execution/strategies/${strategyId}/placed-orders`, {
       params: { status },
     }),
+
+  // Live 5m Simulation Trigger
+  simulateExecution: (strategyId) =>
+    axiosClient.post(`/admin/execution/strategies/${strategyId}/simulate-execution`),
 };
