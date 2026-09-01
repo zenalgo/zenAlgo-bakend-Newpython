@@ -5,13 +5,13 @@ import re
 from app.strategies.rules.rule_schema import StrategyRule, ParsedRule
 
 class StrategyLegRequest(BaseModel):
-    sequence: int
-    segment: str # EQUITY, FNO, CURRENCY, COMMODITY
-    side: str # BUY, SELL
-    strikeSelection: str = Field(..., alias="strikeSelection") # ATM, OTM, ITM, CUSTOM
+    sequence: int = 1
+    segment: str = "OPT" # EQUITY, FNO, OPT, CURRENCY, COMMODITY
+    side: str = "BUY" # BUY, SELL
+    strikeSelection: str = Field("ATM", alias="strikeSelection") # ATM, OTM, ITM, CUSTOM
     strikeValue: Optional[Decimal] = Field(None, alias="strikeValue")
-    expiry: str # WEEKLY, MONTHLY, NEXT_WEEKLY
-    lots: int = Field(..., ge=1)
+    expiry: str = "WEEKLY" # WEEKLY, MONTHLY, NEXT_WEEKLY
+    lots: int = Field(1, ge=1)
     targetType: str = Field("NONE", alias="targetType") # NONE, POINTS, PERCENTAGE
     targetValue: Optional[Decimal] = Field(None, alias="targetValue")
     stopLossType: str = Field("NONE", alias="stopLossType")
@@ -27,27 +27,53 @@ class StrategyLegRequest(BaseModel):
         "extra": "allow"
     }
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_leg(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "sequence" not in data or data["sequence"] is None:
+            data["sequence"] = 1
+        if "segment" not in data or not data["segment"]:
+            data["segment"] = data.get("instrumentType") or "OPT"
+        if "expiry" not in data or not data["expiry"]:
+            data["expiry"] = "WEEKLY"
+        if "lots" not in data or not data["lots"]:
+            qty = data.get("quantity") or 50
+            data["lots"] = max(1, int(qty) // 50) if int(qty) >= 50 else 1
+        if "strikeSelection" not in data and "strike" in data:
+            data["strikeSelection"] = data["strike"]
+        if "side" not in data and "action" in data:
+            data["side"] = data["action"]
+        return data
+
 class StrategyEntrySettingRequest(BaseModel):
-    entryTime: str = Field(..., alias="entryTime") # HH:MM
+    entryTime: str = Field("09:15", alias="entryTime") # HH:MM
 
     model_config = {
         "populate_by_name": True,
         "extra": "allow"
     }
 
-    @field_validator("entryTime")
+    @model_validator(mode="before")
     @classmethod
-    def validate_entry_time(cls, value: str) -> str:
-        if not re.match(r"^\d{2}:\d{2}$", value):
-            raise ValueError("Time must be in HH:MM format")
-        return value
+    def normalize_entry_time(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "entryTime" not in data or not data["entryTime"]:
+                data["entryTime"] = "09:15"
+            else:
+                # Trim seconds if provided as HH:MM:SS
+                parts = str(data["entryTime"]).strip().split(":")
+                if len(parts) >= 2:
+                    data["entryTime"] = f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
+        return data
 
 class StrategyExitSettingRequest(BaseModel):
     profitMtmType: str = Field("NONE", alias="profitMtmType") # NONE, RUPEES, PERCENTAGE
     profitMtmValue: Optional[Decimal] = Field(None, alias="profitMtmValue")
     stopLossMtmType: str = Field("NONE", alias="stopLossMtmType")
     stopLossMtmValue: Optional[Decimal] = Field(None, alias="stopLossMtmValue")
-    exitTime: str = Field(..., alias="exitTime") # HH:MM
+    exitTime: str = Field("15:15", alias="exitTime") # HH:MM
     exitOnExpiry: bool = Field(False, alias="exitOnExpiry")
     exitAfterEntryType: str = Field("NONE", alias="exitAfterEntryType")
     exitAfterEntryValue: Optional[int] = Field(None, alias="exitAfterEntryValue")
@@ -57,12 +83,18 @@ class StrategyExitSettingRequest(BaseModel):
         "extra": "allow"
     }
 
-    @field_validator("exitTime")
+    @model_validator(mode="before")
     @classmethod
-    def validate_exit_time(cls, value: str) -> str:
-        if not re.match(r"^\d{2}:\d{2}$", value):
-            raise ValueError("Time must be in HH:MM format")
-        return value
+    def normalize_exit_time(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "exitTime" not in data or not data["exitTime"]:
+                data["exitTime"] = "15:15"
+            else:
+                # Trim seconds if provided as HH:MM:SS
+                parts = str(data["exitTime"]).strip().split(":")
+                if len(parts) >= 2:
+                    data["exitTime"] = f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
+        return data
 
 # --- Strategy Builder v2.0.0 Schemas ---
 
@@ -264,6 +296,14 @@ class StrategyRequest(BaseModel):
                 sched["entryFrom"] = "09:15"
             if not sched.get("forcedExitTime"):
                 sched["forcedExitTime"] = "15:15"
+
+        # 8. Defaults for entryDays, entrySetting, and exitSetting
+        if "entryDays" not in data or not data["entryDays"]:
+            data["entryDays"] = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"]
+        if "entrySetting" not in data or not data["entrySetting"]:
+            data["entrySetting"] = {"entryTime": "09:15", "entryType": "INTRADAY", "reEntryLimit": 3}
+        if "exitSetting" not in data or not data["exitSetting"]:
+            data["exitSetting"] = {"exitTime": "15:15", "exitType": "TIME_BASED"}
 
         return data
 
