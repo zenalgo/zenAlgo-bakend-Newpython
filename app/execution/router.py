@@ -509,48 +509,57 @@ async def simulate_strategy_execution(
     db.add(batch)
     await db.flush()
 
-    # 5. Create User Trace & Stepper Events
-    user_id = current_admin.id
-    trace = StrategyUserExecutionTrace(
-        execution_batch_id=batch.id,
-        signal_id=signal.id,
-        strategy_id=strat.id,
-        strategy_version_id=version.id,
-        user_id=user_id,
-        status="EXECUTED",
-        current_step="ORDER_PLACEMENT",
-        correlation_id=f"TRACE-5M-{signal.id}-{user_id}"
-    )
-    db.add(trace)
-    await db.flush()
+    # 5. Create User Traces & Stepper Events for Subscribers
+    from app.users.models import User
+    users_res = await db.execute(select(User).limit(10))
+    all_users = list(users_res.scalars().all())
 
-    events = [
-        StrategyExecutionTraceEvent(
-            execution_trace_id=trace.id,
-            step="USER_CHECK",
-            status="SUCCESS",
-            message="User account verified active and eligible"
-        ),
-        StrategyExecutionTraceEvent(
-            execution_trace_id=trace.id,
-            step="SUBSCRIPTION_CHECK",
-            status="SUCCESS",
-            message="Active Pro copy-trading quota verified"
-        ),
-        StrategyExecutionTraceEvent(
-            execution_trace_id=trace.id,
-            step="RISK_CHECK",
-            status="SUCCESS",
-            message="Risk limits approved (Daily loss ₹0 / ₹5,000 threshold)"
-        ),
-        StrategyExecutionTraceEvent(
-            execution_trace_id=trace.id,
-            step="BROKER_ORDER_PLACEMENT",
-            status="SUCCESS",
-            message=f"Paper market order placed and filled at ₹100.00 ({underlying_name} 25050 CE)"
+    trace_entities = []
+    events_to_add = []
+    main_admin_trace = None
+
+    for idx, u in enumerate(all_users):
+        is_rejected = (idx >= 7 and u.id != current_admin.id)
+        st = "REJECTED" if is_rejected else "EXECUTED"
+        step = "RISK_CHECK" if is_rejected else "ORDER_PLACEMENT"
+        f_code = "INSUFFICIENT_MARGIN" if idx == 7 else ("MAX_DAILY_LOSS_EXCEEDED" if idx == 8 else None)
+        f_reason = "Required margin ₹10,000 > Available margin ₹2,500" if idx == 7 else ("Daily loss limit ₹5,000 threshold reached for today" if idx == 8 else None)
+
+        t = StrategyUserExecutionTrace(
+            execution_batch_id=batch.id,
+            signal_id=signal.id,
+            strategy_id=strat.id,
+            strategy_version_id=version.id,
+            user_id=u.id,
+            status=st,
+            current_step=step,
+            failure_code=f_code,
+            failure_reason=f_reason,
+            correlation_id=f"TRACE-5M-{signal.id}-{u.id}"
         )
-    ]
-    db.add_all(events)
+        db.add(t)
+        await db.flush()
+
+        if u.id == current_admin.id:
+            main_admin_trace = t
+
+        if not is_rejected:
+            events_to_add.extend([
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="USER_CHECK", status="SUCCESS", message=f"User account {u.email} verified active and eligible"),
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="SUBSCRIPTION_CHECK", status="SUCCESS", message="Active Pro copy-trading quota verified"),
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="RISK_CHECK", status="SUCCESS", message="Risk limits approved (Daily loss ₹0 / ₹5,000 threshold)"),
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="BROKER_ORDER_PLACEMENT", status="SUCCESS", message=f"Paper market order placed and filled at ₹100.00 ({underlying_name} 25050 CE)")
+            ])
+        else:
+            events_to_add.extend([
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="USER_CHECK", status="SUCCESS", message=f"User account {u.email} verified active"),
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="SUBSCRIPTION_CHECK", status="SUCCESS", message="Active Pro copy-trading quota verified"),
+                StrategyExecutionTraceEvent(execution_trace_id=t.id, step="RISK_CHECK", status="FAILED", message=f_reason, error_code=f_code)
+            ])
+
+    db.add_all(events_to_add)
+    user_id = current_admin.id
+    trace = main_admin_trace or t
 
     # 6. Create Execution & Leg
     exec_record = StrategyExecution(

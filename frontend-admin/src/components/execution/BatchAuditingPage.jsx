@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StatusBadge } from '../common/StatusBadge';
-import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Layers, RefreshCw, Users, CheckCircle2, XCircle, Search, Eye, Zap, Info, ArrowRight, ShieldCheck, User } from 'lucide-react';
 import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import UserTraceStepperModal from './UserTraceStepperModal';
@@ -15,7 +15,9 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
   const [traces, setTraces] = useState([]);
   const [activeTraceId, setActiveTraceId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadingTraces, setLoadingTraces] = useState(false);
   const [triggering, setTriggering] = useState(false);
+  const subscriberSectionRef = useRef(null);
 
   useEffect(() => {
     strategyApi.getStrategies().then((res) => {
@@ -53,20 +55,38 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
     }
   }, [currentStrategyId]);
 
+  const loadBatchTraces = async (bId) => {
+    if (!bId) return;
+    setLoadingTraces(true);
+    try {
+      const res = await executionApi.getBatchTraces(bId);
+      setTraces(res.data || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingTraces(false);
+    }
+  };
+
   useEffect(() => {
     if (selectedBatchId) {
-      executionApi.getBatchTraces(selectedBatchId).then((res) => {
-        setTraces(res.data || []);
-      });
+      loadBatchTraces(selectedBatchId);
     }
   }, [selectedBatchId]);
+
+  const handleSelectBatch = (bId) => {
+    setSelectedBatchId(bId);
+    if (subscriberSectionRef.current) {
+      subscriberSectionRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
 
   const handleSimulateTrade = async () => {
     if (!currentStrategyId) return;
     setTriggering(true);
     try {
       await executionApi.simulateExecution(currentStrategyId);
-      addToast(`Batch signal and subscriber execution traces created for Strategy #${currentStrategyId}!`, 'success');
+      addToast(`Batch signal and subscriber traces created for Strategy #${currentStrategyId}!`, 'success');
       loadBatches();
     } catch (err) {
       addToast(err.message || 'Simulation failed', 'error');
@@ -143,7 +163,7 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               <span>Total Batches Today: <strong style={{ color: 'var(--accent-cyan)' }}>{batches.length}</strong></span>
-              <span>Subscriber Fills: <strong style={{ color: 'var(--accent-emerald)' }}>100% Success</strong></span>
+              <span>Subscriber Fill Ratio: <strong style={{ color: 'var(--accent-emerald)' }}>80% - 100%</strong></span>
             </div>
           </div>
         )}
@@ -209,12 +229,12 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
                     <td><StatusBadge status={b.status} /></td>
                     <td>
                       <button
-                        onClick={() => setSelectedBatchId(b.batchId)}
+                        onClick={() => handleSelectBatch(b.batchId)}
                         className={`btn ${selectedBatchId === b.batchId ? 'btn-primary' : 'btn-secondary'}`}
-                        style={{ padding: '5px 12px', fontSize: '0.75rem' }}
+                        style={{ padding: '6px 14px', fontSize: '0.8rem' }}
                       >
-                        <Eye size={12} />
-                        <span>Inspect Subscribers ({b.successfulUsers})</span>
+                        <Eye size={14} />
+                        <span>Inspect Subscribers ({b.successfulUsers} Fills)</span>
                       </button>
                     </td>
                   </tr>
@@ -226,72 +246,98 @@ export const BatchAuditingPage = ({ selectedStrategyId }) => {
       </div>
 
       {/* Selected Batch: Subscriber User Breakdown */}
-      {selectedBatchId && (
-        <div className="glass-panel" style={{ padding: '24px', border: '1px solid var(--border-highlight)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fff' }}>
-                2. Subscriber User Audit Breakdown (Batch #{selectedBatchId})
-              </h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: 0 }}>
-                Click <strong>"Step Timeline Stepper"</strong> on any user to inspect KYC, Subscription Quota, Risk Limits, and Broker Order Execution.
-              </p>
-            </div>
+      <div ref={subscriberSectionRef} className="glass-panel" style={{ padding: '24px', border: '1px solid var(--border-highlight)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <div>
+            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#fff' }}>
+              2. Subscriber User Audit Breakdown {selectedBatchId ? `(Batch #${selectedBatchId})` : ''}
+            </h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: 0 }}>
+              Click <strong>"View 4-Step Timeline"</strong> on any subscriber to inspect KYC, Subscription Quota, Risk Limits, and Broker Order Execution.
+            </p>
           </div>
-
-          <div className="table-container">
-            <table>
-              <thead>
-                <tr>
-                  <th>Subscriber User</th>
-                  <th>Audit Step</th>
-                  <th>Execution Status</th>
-                  <th>Failure Reason / Code</th>
-                  <th>Audit Stepper Timeline</th>
-                </tr>
-              </thead>
-              <tbody>
-                {traces.length === 0 ? (
-                  <tr>
-                    <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
-                      No subscriber trace records found in Batch #{selectedBatchId}.
-                    </td>
-                  </tr>
-                ) : (
-                  traces.map((t, idx) => {
-                    const traceId = t.traceId || t.id || 1448;
-                    return (
-                      <tr key={idx}>
-                        <td>
-                          <div style={{ fontWeight: 700, color: '#fff' }}>Subscriber User #{t.userId}</div>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Copy-Trading Allocation</div>
-                        </td>
-                        <td className="font-mono" style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>
-                          {t.currentStep || 'ORDER_PLACEMENT'}
-                        </td>
-                        <td><StatusBadge status={t.status || 'EXECUTED'} /></td>
-                        <td style={{ color: t.failureReason ? 'var(--accent-rose)' : 'var(--text-muted)', fontSize: '0.8rem' }}>
-                          {t.failureReason || 'Passed all institutional checks'}
-                        </td>
-                        <td>
-                          <button
-                            onClick={() => setActiveTraceId(traceId)}
-                            className="btn btn-primary"
-                            style={{ padding: '6px 14px', fontSize: '0.8rem' }}
-                          >
-                            <ShieldCheck size={14} />
-                            <span>View 4-Step Timeline</span>
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          {selectedBatchId && (
+            <button onClick={() => loadBatchTraces(selectedBatchId)} disabled={loadingTraces} className="btn btn-secondary">
+              <RefreshCw size={14} className={loadingTraces ? 'animate-spin' : ''} />
+              <span>Refresh Subscribers</span>
+            </button>
+          )}
         </div>
-      )}
+
+        <div className="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Subscriber User</th>
+                <th>Audit Step</th>
+                <th>Execution Status</th>
+                <th>Failure Reason / Code</th>
+                <th>Audit Stepper Timeline</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingTraces ? (
+                <tr>
+                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    Loading subscriber traces...
+                  </td>
+                </tr>
+              ) : !selectedBatchId ? (
+                <tr>
+                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    Please select a batch above or click <strong>"Inspect Subscribers"</strong>.
+                  </td>
+                </tr>
+              ) : traces.length === 0 ? (
+                <tr>
+                  <td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    No subscriber trace records found in Batch #{selectedBatchId}.
+                  </td>
+                </tr>
+              ) : (
+                traces.map((t, idx) => {
+                  const traceId = t.traceId || t.id || 1448;
+                  const isRejected = t.status === 'REJECTED';
+                  return (
+                    <tr key={idx}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <User size={16} color="var(--accent-cyan)" />
+                          <div>
+                            <div style={{ fontWeight: 700, color: '#fff' }}>Subscriber User #{t.userId}</div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Copy-Trading Allocation</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="font-mono" style={{ color: isRejected ? 'var(--accent-rose)' : 'var(--accent-cyan)', fontWeight: 600 }}>
+                        {t.currentStep || 'ORDER_PLACEMENT'}
+                      </td>
+                      <td>
+                        <span className={`badge ${!isRejected ? 'badge-running' : 'badge-failed'}`}>
+                          {t.status || 'EXECUTED'}
+                        </span>
+                      </td>
+                      <td style={{ color: t.failureReason ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontSize: '0.85rem' }}>
+                        {t.failureReason ? `⚠️ ${t.failureReason}` : '✅ Passed all institutional checks'}
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => setActiveTraceId(traceId)}
+                          className="btn btn-primary"
+                          style={{ padding: '6px 14px', fontSize: '0.8rem' }}
+                        >
+                          <ShieldCheck size={14} />
+                          <span>View 4-Step Timeline</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {/* Vertical Stepper Modal */}
       <UserTraceStepperModal
