@@ -6,6 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# Pre-import all SQLAlchemy models to register them on Base metadata registry
+import app.users.models
+import app.execution.models
+import app.strategies.models
+import app.wallets.models
+import app.subscriptions.models
+import app.brokers.models
+
 from app.core.database import AsyncSessionLocal
 from app.strategies.models import Strategy, StrategyVersion, StrategyEntryDay
 from app.execution.models import StrategySignal
@@ -143,17 +151,22 @@ async def check_and_trigger_strategies() -> None:
         tasks = [process_strategy_entry(sid, today, current_time_str, day_name) for sid in active_ids]
         await asyncio.gather(*tasks)
 
-def start_scheduler():
-    scheduler = AsyncIOScheduler()
+async def run_scheduler():
+    scheduler = AsyncIOScheduler(timezone=ZONE_KOLKATA)
     scheduler.add_job(check_and_trigger_strategies, "cron", second="0")
     scheduler.start()
-    logger.info("Apscheduler triggered successfully at 00th second cron")
+    logger.info("Apscheduler triggered successfully at 00th second cron (Asia/Kolkata)")
     
-    # Run event loop indefinitely
+    # Keep the async loop running
+    while True:
+        await asyncio.sleep(3600)
+
+def start_scheduler():
     try:
-        asyncio.get_event_loop().run_forever()
+        asyncio.run(run_scheduler())
     except (KeyboardInterrupt, SystemExit):
-        pass
+        logger.info("Scheduler worker stopped.")
 
 if __name__ == "__main__":
     start_scheduler()
+

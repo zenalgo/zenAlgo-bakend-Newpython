@@ -91,11 +91,30 @@ class ExitEngine:
             )
             return []
 
-        # Current time in Asia/Kolkata
+        # Query StrategyVersion to check trading type (Intraday vs Positional)
+        stmt_ver = select(StrategyVersion).where(StrategyVersion.id == strategy_version_id)
+        res_ver = await db.execute(stmt_ver)
+        strat_ver = res_ver.scalar_one_or_none()
+        is_intraday = True
+        if strat_ver and strat_ver.trading_type:
+            is_intraday = (strat_ver.trading_type.upper() == "INTRADAY")
+
+        # Current time in Asia/Kolkata derived from forced_time_ist, event.timestamp, or wall clock
         now_utc = datetime.now(timezone.utc)
         now_ist = now_utc.astimezone(ZONE_KOLKATA)
-        eval_time_ist = forced_time_ist or now_ist.time()
-        eval_date_ist = now_ist.date()
+        if forced_time_ist is not None:
+            eval_time_ist = forced_time_ist
+            eval_date_ist = now_ist.date()
+        elif event.timestamp is not None:
+            ts = event.timestamp
+            if ts.tzinfo is None:
+                ts = pytz.utc.localize(ts)
+            ts_ist = ts.astimezone(ZONE_KOLKATA)
+            eval_time_ist = ts_ist.time()
+            eval_date_ist = ts_ist.date()
+        else:
+            eval_time_ist = now_ist.time()
+            eval_date_ist = now_ist.date()
 
         generated_signals: List[TradingSignal] = []
 
@@ -121,7 +140,7 @@ class ExitEngine:
             exit_result: Optional[ExitEvaluationResult] = None
 
             # --- Check A: Forced Time Exit (15:15 IST) ---
-            forced_res = evaluate_forced_time_exit(eval_time_ist, time(15, 15), is_intraday=True)
+            forced_res = evaluate_forced_time_exit(eval_time_ist, time(15, 15), is_intraday=is_intraday)
             if forced_res.decision == ExitDecision.TRIGGERED:
                 exit_result = forced_res
                 logger.info("forced_exit_triggered: execution_id=%s reason=%s", execution.id, forced_res.reason, extra={**exec_log_meta, "event": "forced_exit_triggered"})

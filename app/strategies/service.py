@@ -42,11 +42,11 @@ def serialize_builder_fields(request: StrategyRequest) -> str:
         "category": request.category or "",
         "marketBias": request.marketBias or "BULLISH",
         "timeframe": request.timeframe or "15m",
-        "meta": request.meta.model_dump(by_alias=True) if request.meta else {},
-        "instrument": request.instrument.model_dump(by_alias=True) if request.instrument else {},
-        "schedule": request.schedule.model_dump(by_alias=True) if request.schedule else {},
-        "riskManagement": request.riskManagement.model_dump(by_alias=True) if request.riskManagement else {},
-        "target": request.target.model_dump(by_alias=True) if request.target else {},
+        "meta": request.meta.model_dump(by_alias=True) if hasattr(request.meta, "model_dump") else (request.meta or {}),
+        "instrument": request.instrument.model_dump(by_alias=True) if hasattr(request.instrument, "model_dump") else (request.instrument or {}),
+        "schedule": request.schedule.model_dump(by_alias=True) if hasattr(request.schedule, "model_dump") else (request.schedule or {}),
+        "riskManagement": request.riskManagement.model_dump(by_alias=True) if hasattr(request.riskManagement, "model_dump") else (request.riskManagement or {}),
+        "target": request.target.model_dump(by_alias=True) if hasattr(request.target, "model_dump") else ({"value": str(request.target)} if isinstance(request.target, (str, int, float)) else (request.target or {})),
         "options": request.options or {},
         "execution": request.execution or {},
         "pivotConfiguration": request.pivotConfiguration or (request.model_extra or {}).get("pivotConfiguration") or {},
@@ -346,9 +346,9 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
 def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
     """Derives default/existing relational fields from Strategy Builder JSON fields."""
     if request.meta and not request.name:
-        request.name = request.meta.strategyName
+        request.name = request.meta.strategyName if hasattr(request.meta, "strategyName") else (request.meta.get("strategyName") if isinstance(request.meta, dict) else None)
     if request.instrument and not request.underlying:
-        request.underlying = request.instrument.underlying
+        request.underlying = request.instrument.underlying if hasattr(request.instrument, "underlying") else (request.instrument.get("underlying") if isinstance(request.instrument, dict) else None)
     if request.underlying:
         u_upper = str(request.underlying).upper().strip()
         if "NIFTY 50" in u_upper or u_upper in ("NIFTY_50", "NIFTY50"):
@@ -360,7 +360,7 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
         else:
             request.underlying = u_upper
     if request.riskManagement and not request.capital:
-        cap = request.riskManagement.capitalAllocationPerTrade
+        cap = request.riskManagement.capitalAllocationPerTrade if hasattr(request.riskManagement, "capitalAllocationPerTrade") else (request.riskManagement.get("capitalAllocationPerTrade") if isinstance(request.riskManagement, dict) else None)
         if cap is not None and str(cap).strip():
             try:
                 cap_clean = re.sub(r"[^\d.]", "", str(cap).strip())
@@ -379,13 +379,19 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
     entry_time = "09:15"
     exit_time = "15:15"
     if request.schedule:
-        if request.schedule.entryFrom and str(request.schedule.entryFrom).strip():
-            entry_time = str(request.schedule.entryFrom).strip()
-        if request.schedule.forcedExitTime and str(request.schedule.forcedExitTime).strip():
-            exit_time = str(request.schedule.forcedExitTime).strip()
+        s_entry = request.schedule.entryFrom if hasattr(request.schedule, "entryFrom") else (request.schedule.get("entryFrom") if isinstance(request.schedule, dict) else None)
+        s_exit = request.schedule.forcedExitTime if hasattr(request.schedule, "forcedExitTime") else (request.schedule.get("forcedExitTime") if isinstance(request.schedule, dict) else None)
+        if s_entry and str(s_entry).strip():
+            entry_time = str(s_entry).strip()
+        if s_exit and str(s_exit).strip():
+            exit_time = str(s_exit).strip()
 
         if not request.entryDays:
-            source_days = request.schedule.applicableDays or request.schedule.entryDays
+            source_days = (
+                (request.schedule.applicableDays or request.schedule.entryDays)
+                if hasattr(request.schedule, "applicableDays")
+                else ((request.schedule.get("applicableDays") or request.schedule.get("entryDays")) if isinstance(request.schedule, dict) else None)
+            )
             if not source_days:
                 source_days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 

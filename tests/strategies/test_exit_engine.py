@@ -227,7 +227,7 @@ async def test_strategy_1_exit_at_2r_target(db_session, setup_exit_env):
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="5m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("110.50"),
         price=Decimal("110.50")
     )
@@ -260,7 +260,7 @@ async def test_strategy_1_partial_exit_at_1r_leaves_position_monitoring(db_sessi
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="5m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("105.50"),
         price=Decimal("105.50")
     )
@@ -287,7 +287,7 @@ async def test_duplicate_exit_event_prevented(db_session, setup_exit_env):
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="5m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("93.00"), # Breaches SL 95.00
         price=Decimal("93.00")
     )
@@ -346,7 +346,7 @@ async def test_no_broker_calls_from_exit_engine(db_session, setup_exit_env):
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="5m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("90.00"), # Stop loss hit
         price=Decimal("90.00")
     )
@@ -372,7 +372,7 @@ async def test_strategy_2_alert_candle_range_target_and_sl(db_session, setup_exi
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="15m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("25105.00"),
         price=Decimal("25105.00")
     )
@@ -399,7 +399,7 @@ async def test_strategy_3_pivot_reversal_target_and_invalidation(db_session, set
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="RELIANCE",
         timeframe="1d",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("2955.00"), # Breaches R3 level
         price=Decimal("2955.00")
     )
@@ -437,7 +437,7 @@ async def test_structured_logging_contains_correlation_and_no_secrets(db_session
         event_type=MarketEventType.CANDLE_CLOSED,
         symbol="NIFTY",
         timeframe="5m",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc),
         close=Decimal("111.00"),
         price=Decimal("111.00")
     )

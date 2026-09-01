@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Union, Any
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, List, Union, Any, Dict
 from decimal import Decimal
 import re
 from app.strategies.rules.rule_schema import StrategyRule, ParsedRule
@@ -23,19 +23,21 @@ class StrategyLegRequest(BaseModel):
     trailingSlBy: Optional[Decimal] = Field(None, alias="trailingSlBy")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
 class StrategyEntrySettingRequest(BaseModel):
     entryTime: str = Field(..., alias="entryTime") # HH:MM
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
     @field_validator("entryTime")
     @classmethod
-    def validate_time(cls, value: str) -> str:
+    def validate_entry_time(cls, value: str) -> str:
         if not re.match(r"^\d{2}:\d{2}$", value):
             raise ValueError("Time must be in HH:MM format")
         return value
@@ -46,17 +48,18 @@ class StrategyExitSettingRequest(BaseModel):
     stopLossMtmType: str = Field("NONE", alias="stopLossMtmType")
     stopLossMtmValue: Optional[Decimal] = Field(None, alias="stopLossMtmValue")
     exitTime: str = Field(..., alias="exitTime") # HH:MM
-    exitOnExpiry: bool = Field(True, alias="exitOnExpiry")
+    exitOnExpiry: bool = Field(False, alias="exitOnExpiry")
     exitAfterEntryType: str = Field("NONE", alias="exitAfterEntryType")
     exitAfterEntryValue: Optional[int] = Field(None, alias="exitAfterEntryValue")
 
     model_config = {
-        "populate_by_name": True
+        "populate_by_name": True,
+        "extra": "allow"
     }
 
     @field_validator("exitTime")
     @classmethod
-    def validate_time(cls, value: str) -> str:
+    def validate_exit_time(cls, value: str) -> str:
         if not re.match(r"^\d{2}:\d{2}$", value):
             raise ValueError("Time must be in HH:MM format")
         return value
@@ -65,7 +68,7 @@ class StrategyExitSettingRequest(BaseModel):
 
 class StrategyMeta(BaseModel):
     strategyId: Optional[str] = Field(None, alias="strategyId")
-    strategyName: str = Field(..., alias="strategyName")
+    strategyName: Optional[str] = Field(None, alias="strategyName")
     authorName: Optional[str] = Field(None, alias="authorName")
     createdAt: Optional[str] = Field(None, alias="createdAt")
     status: Optional[str] = Field("DRAFT", alias="status")
@@ -79,6 +82,7 @@ class InstrumentConfig(BaseModel):
     underlying: str
     indicesArray: Optional[List[str]] = Field(None, alias="indicesArray")
     expiryType: Optional[str] = Field("Weekly", alias="expiryType")
+    type: Optional[str] = Field("Options", alias="type")
 
     model_config = {
         "populate_by_name": True,
@@ -86,9 +90,9 @@ class InstrumentConfig(BaseModel):
     }
 
 class ScheduleConfig(BaseModel):
-    entryFrom: str = Field(..., alias="entryFrom")
+    entryFrom: Optional[str] = Field("09:15", alias="entryFrom")
     entryTo: Optional[str] = Field("14:30", alias="entryTo")
-    forcedExitTime: str = Field(..., alias="forcedExitTime")
+    forcedExitTime: Optional[str] = Field("15:15", alias="forcedExitTime")
     applicableDays: Optional[List[str]] = Field(None, alias="applicableDays")
     avoidEvents: Optional[str] = Field("", alias="avoidEvents")
     entryDay: Optional[str] = Field(None, alias="entryDay")
@@ -119,12 +123,15 @@ class RiskManagementConfig(BaseModel):
     maxLossPerDay: Optional[Union[str, float]] = Field(None, alias="maxLossPerDay")
     maxLossPerWeek: Optional[Union[str, float]] = Field(None, alias="maxLossPerWeek")
     capitalAllocationPerTrade: Optional[Union[str, float]] = Field(None, alias="capitalAllocationPerTrade")
-    maxTradesPerDay: Optional[int] = Field(None, alias="maxTradesPerDay")
-    maxOpenPositions: Optional[int] = Field(None, alias="maxOpenPositions")
-    cooldownPeriodMinutes: Optional[int] = Field(None, alias="cooldownPeriodMinutes")
+    maxTradesPerDay: Optional[Union[int, str]] = Field(None, alias="maxTradesPerDay")
+    maxOpenPositions: Optional[Union[int, str]] = Field(None, alias="maxOpenPositions")
+    cooldownPeriodMinutes: Optional[Union[int, str]] = Field(None, alias="cooldownPeriodMinutes")
+    cooldownMinutes: Optional[Union[int, str]] = Field(None, alias="cooldownMinutes")
     positionSizing: Optional[str] = Field(None, alias="positionSizing")
-    consecutiveLossLimit: Optional[int] = Field(None, alias="consecutiveLossLimit")
+    positionSizingMode: Optional[str] = Field(None, alias="positionSizingMode")
+    consecutiveLossLimit: Optional[Union[int, str]] = Field(None, alias="consecutiveLossLimit")
     actionOnConsecutiveLoss: Optional[str] = Field(None, alias="actionOnConsecutiveLoss")
+    afterLossAction: Optional[str] = Field(None, alias="afterLossAction")
     partialExit: Optional[dict] = Field(None, alias="partialExit")
     trailingStop: Optional[dict] = Field(None, alias="trailingStop")
 
@@ -144,9 +151,17 @@ class TargetParameter(BaseModel):
     }
 
 class TargetConfig(BaseModel):
-    value: Optional[str] = None
+    value: Optional[Union[str, float, int]] = None
+    type: Optional[str] = None
     scaleOutPlan: Optional[str] = Field(None, alias="scaleOutPlan")
     targets: Optional[List[TargetParameter]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_from_string_or_dict(cls, data: Any) -> Any:
+        if isinstance(data, (str, int, float)):
+            return {"value": str(data)}
+        return data
 
     model_config = {
         "populate_by_name": True,
@@ -169,29 +184,88 @@ class StrategyRequest(BaseModel):
     exitSetting: Optional[StrategyExitSettingRequest] = None
     
     # Builder fields
-    meta: Optional[StrategyMeta] = None
+    meta: Optional[Union[StrategyMeta, dict]] = None
     description: Optional[str] = None
     youtubeUrl: Optional[str] = Field(None, alias="youtubeUrl")
     coreIdea: Optional[str] = Field(None, alias="coreIdea")
     category: Optional[str] = None
     marketBias: Optional[str] = Field(None, alias="marketBias")
     timeframe: Optional[str] = None
-    instrument: Optional[InstrumentConfig] = None
-    schedule: Optional[ScheduleConfig] = None
+    instrument: Optional[Union[InstrumentConfig, dict]] = None
+    schedule: Optional[Union[ScheduleConfig, dict]] = None
     
     entryConditions: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="entryConditions")
     exitConditions: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="exitConditions")
     goldenRules: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="goldenRules")
     keyRememberPoints: Optional[List[Union[str, StrategyRule, dict]]] = Field(None, alias="keyRememberPoints")
     
-    riskManagement: Optional[RiskManagementConfig] = Field(None, alias="riskManagement")
-    target: Optional[TargetConfig] = None
+    riskManagement: Optional[Union[RiskManagementConfig, dict]] = Field(None, alias="riskManagement")
+    target: Optional[Union[TargetConfig, dict, str]] = None
     options: Optional[dict] = None
     execution: Optional[dict] = None
     pivotConfiguration: Optional[dict] = Field(None, alias="pivotConfiguration")
     eventExclusion: Optional[dict] = Field(None, alias="eventExclusion")
     tradingHorizon: Optional[str] = Field("Intraday", alias="tradingHorizon")
     scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_incoming_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        
+        # 1. Merge nested "config" dict if present
+        config_data = data.get("config")
+        if isinstance(config_data, dict):
+            for k, v in config_data.items():
+                if k not in data or data[k] is None:
+                    data[k] = v
+                elif k == "target" and isinstance(data[k], (str, int, float)) and isinstance(v, dict):
+                    data[k] = v
+                elif k == "timing" and ("schedule" not in data or data["schedule"] is None):
+                    data["schedule"] = v
+
+        # 2. Timing -> Schedule mapping
+        if "timing" in data and ("schedule" not in data or data["schedule"] is None):
+            data["schedule"] = data["timing"]
+
+        # 3. Handle author -> meta mapping
+        if "author" in data and ("meta" not in data or not data["meta"]):
+            data["meta"] = {
+                "strategyId": data.get("id") or "STRAT",
+                "strategyName": data.get("name") or "Custom Strategy",
+                "authorName": data.get("author")
+            }
+        elif "meta" in data and isinstance(data["meta"], dict):
+            if "strategyName" not in data["meta"] and "name" in data:
+                data["meta"]["strategyName"] = data["name"]
+
+        # 4. Handle entryTimeframe -> timeframe
+        if "entryTimeframe" in data and ("timeframe" not in data or not data["timeframe"]):
+            data["timeframe"] = data["entryTimeframe"]
+
+        # 5. Handle instrumentType -> instrument
+        if "instrumentType" in data and ("instrument" not in data or not data["instrument"]):
+            data["instrument"] = {
+                "type": data["instrumentType"],
+                "underlying": data.get("underlying", "NIFTY"),
+                "indicesArray": data.get("indicesArray", []),
+                "expiryType": data.get("expiryType", "Weekly")
+            }
+
+        # 6. Target normalization: if string or number, wrap in dict
+        if "target" in data and isinstance(data["target"], (str, int, float)):
+            data["target"] = {"value": str(data["target"])}
+
+        # 7. Schedule normalization
+        if "schedule" in data and isinstance(data["schedule"], dict):
+            sched = data["schedule"]
+            if not sched.get("entryFrom"):
+                sched["entryFrom"] = "09:15"
+            if not sched.get("forcedExitTime"):
+                sched["forcedExitTime"] = "15:15"
+
+        return data
 
     model_config = {
         "populate_by_name": True,
