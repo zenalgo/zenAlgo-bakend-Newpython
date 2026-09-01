@@ -199,3 +199,17 @@ async def reserve_strategy_execution(db: AsyncSession, user_id: int, strategy_id
             usedExecutionCount=limit,
             maxExecutionLimit=limit
         )
+
+async def release_strategy_execution(db: AsyncSession, user_id: int, strategy_id: int, trading_date: date) -> None:
+    """Atomically releases a previously reserved daily execution quota if order execution failed before placement."""
+    stmt_dec = (
+        update(UserDailyStrategyUsage)
+        .where(UserDailyStrategyUsage.user_id == user_id)
+        .where(UserDailyStrategyUsage.trading_date == trading_date)
+        .where(UserDailyStrategyUsage.strategy_execution_count > 0)
+        .values(
+            strategy_execution_count=UserDailyStrategyUsage.strategy_execution_count - 1,
+            updated_at=func.now()
+        )
+    )
+    await db.execute(stmt_dec)

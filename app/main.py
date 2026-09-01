@@ -44,8 +44,29 @@ async def add_request_id_middleware(request: Request, call_next):
     response.headers["X-Request-Id"] = request_id
     return response
 
+from app.brokers.bootstrap import bootstrap_broker_adapters
+
+# Bootstrap broker adapter registrations into registry
+bootstrap_broker_adapters()
+
 # Register customized validation and domain exception handlers
 setup_exception_handlers(app)
+
+
+import asyncio
+from app.core.redis import redis_manager
+from app.execution.reconciliation import order_reconciliation_worker
+from app.brokers.websocket import router as ws_router
+
+@app.on_event("startup")
+async def on_startup():
+    await redis_manager.init_redis()
+    asyncio.create_task(order_reconciliation_worker.start())
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    order_reconciliation_worker.stop()
+    await redis_manager.close()
 
 # Register routers
 app.include_router(auth_router)
@@ -57,6 +78,7 @@ app.include_router(strategies_router)
 app.include_router(rules_router)
 app.include_router(strategy_api_router)
 app.include_router(brokers_router)
+app.include_router(ws_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():

@@ -18,12 +18,14 @@ class Settings(BaseSettings):
     
     # Dhan Broker API Configuration
     DHAN_API_BASE_URL: str = Field(default="https://api.dhan.co/v2")
+    DHAN_SANDBOX_MODE: bool = Field(default=True)
 
     # LLM Fallsback Configuration
     GEMINI_API_KEY: Optional[str] = Field(default=None)
     OPENAI_API_KEY: Optional[str] = Field(default=None)
 
     model_config = SettingsConfigDict(
+
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore"

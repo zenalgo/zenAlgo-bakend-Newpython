@@ -4,8 +4,16 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import select, delete
 from decimal import Decimal
-
 from sqlalchemy.pool import NullPool
+
+# Import all SQLAlchemy models to register them in Base.metadata
+import app.users.models
+import app.wallets.models
+import app.subscriptions.models
+import app.strategies.models
+import app.execution.models
+import app.brokers.models
+
 from app.main import app as fastapi_app
 from app.core.config import settings
 from app.core.database import Base, get_db
@@ -37,6 +45,9 @@ def event_loop():
 
 @pytest.fixture(autouse=True, scope="function")
 async def clean_db():
+    """Ensures tables exist and cleans up database tables in topological order before each test run."""
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     """Cleans up all database tables in topological order before each test run."""
     async def do_clean(conn):
         for table in reversed(Base.metadata.sorted_tables):
@@ -93,6 +104,20 @@ async def client(db_session):
     fastapi_app.dependency_overrides.clear()
 
 @pytest.fixture(scope="function")
+async def test_user(db_session):
+    """Creates a standard test user."""
+    user = User(
+        email="testuser@example.com",
+        password_hash=hash_password("Password123!"),
+        role=UserRole.USER,
+        is_active=True,
+        referral_code="REF-TESTUSER"
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+@pytest.fixture(scope="function")
 async def seed_plans(db_session):
     """Seeds standard FREE and PREMIUM plans for subscription testing."""
     free_plan = Plan(
@@ -102,7 +127,7 @@ async def seed_plans(db_session):
         gst_percentage=Decimal("18.00"),
         min_wallet_balance=Decimal("0.00"),
         max_active_strategies=1,
-        max_strategy_executions_per_day=1, # 1 per day limit
+        max_strategy_executions_per_day=1,
         subscription_type="MONTHLY",
         is_active=True
     )
@@ -113,7 +138,7 @@ async def seed_plans(db_session):
         gst_percentage=Decimal("18.00"),
         min_wallet_balance=Decimal("500.00"),
         max_active_strategies=10,
-        max_strategy_executions_per_day=3, # 3 per day limit for test
+        max_strategy_executions_per_day=3,
         subscription_type="MONTHLY",
         is_active=True
     )

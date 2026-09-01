@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from app.users.models import User, UserRole
 from app.auth.service import hash_password
-from app.brokers.models import DhanBrokerSession
+from app.brokers.models import BrokerAccount
 from sqlalchemy.future import select
 
 @pytest.fixture
@@ -53,19 +53,13 @@ async def test_session_handling_valid_expired_missing(client: AsyncClient, setup
     assert res_check.json()["data"]["clientId"] == "DHAN_CLIENT_100"
 
     # 3. Simulate expired session in DB
-    stmt = select(DhanBrokerSession).where(DhanBrokerSession.user_id == setup_trader.id)
+    stmt = select(BrokerAccount).where(BrokerAccount.user_id == setup_trader.id)
     res_stmt = await db_session.execute(stmt)
     session = res_stmt.scalar_one()
     session.expiry_time = datetime.now(timezone.utc) - timedelta(minutes=1)
     db_session.add(session)
     await db_session.commit()
 
-    # Get session details - still returns details, but when executing a trade it will validate expiration
+    # Get session details - when token is expired, endpoint returns 400 Bad Request
     res_check_exp = await client.get("/api/v1/dhan/auth/session/me", headers=headers)
-    assert res_check_exp.status_code == 200
-    
-    # Expiry time check during execution validation
-    from app.execution.service import process_user, StrategyExecutionBatch
-    from app.execution.models import StrategySignal
-    # Create mock batch and trigger check
-    # Will be fully covered in integration tests
+    assert res_check_exp.status_code == 400

@@ -154,10 +154,20 @@ class StrategyExecutionLeg(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     strategy_execution_id = Column(BigInteger, ForeignKey("strategy_executions.id", ondelete="CASCADE"), nullable=False)
     strategy_leg_id = Column(BigInteger, ForeignKey("strategy_legs.id", ondelete="CASCADE"), nullable=False)
-    broker_order_id = Column(String(100), nullable=True)
-    status = Column(String(30), nullable=False, default="PENDING") # PENDING, FILLED, REJECTED
+    broker_order_id = Column(String(100), nullable=True, index=True)
+    correlation_id = Column(String(100), nullable=True, unique=True, index=True)
+    status = Column(String(30), nullable=False, default="PENDING") # PENDING, OPEN, FILLED, REJECTED, CANCELLED, UNKNOWN
     quantity = Column(Integer, nullable=False)
+    requested_quantity = Column(Integer, nullable=True)
+    filled_quantity = Column(Integer, default=0)
+    remaining_quantity = Column(Integer, default=0)
     price = Column(Numeric(15, 2), nullable=True)
+    requested_price = Column(Numeric(15, 2), default=0.00)
+    average_fill_price = Column(Numeric(15, 2), default=0.00)
+    rejection_reason = Column(Text, nullable=True)
+    reconciliation_attempts = Column(Integer, default=0)
+    last_reconciled_at = Column(DateTime(timezone=True), nullable=True)
+    square_off_order_id = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
