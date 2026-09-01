@@ -2,21 +2,17 @@ import axiosClient from './axiosClient';
 
 export const plansApi = {
   getPublicPlans: () =>
-    axiosClient.get('/subscriptions/plans'),
+    axiosClient.get('/admin/plans'),
 
-  getMySubscriptions: () =>
-    axiosClient.get('/subscriptions/my'),
-
-  subscribeToPlan: (planId) =>
-    axiosClient.post('/subscriptions/subscribe', { planId }),
-
-  // Admin Plan Management
-  getAllPlansAdmin: () =>
-    axiosClient.get('/subscriptions/admin/plans'),
+  getMySubscription: () =>
+    axiosClient.get('/subscriptions/me'),
 
   createPlanAdmin: (planData) =>
-    axiosClient.post('/subscriptions/admin/plans', planData),
+    axiosClient.post('/admin/plans', planData),
 
   updatePlanAdmin: (planId, planData) =>
-    axiosClient.put(`/subscriptions/admin/plans/${planId}`, planData),
+    axiosClient.put(`/admin/plans/${planId}`, planData),
+
+  updatePlanStatus: (planId, active) =>
+    axiosClient.put(`/admin/plans/${planId}/status`, { active }),
 };

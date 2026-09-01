@@ -2,11 +2,11 @@ import axiosClient from './axiosClient';
 
 export const usersApi = {
   getUsers: () =>
-    axiosClient.get('/users'),
+    axiosClient.get('/admin/users'),
 
-  createUser: (userData) =>
-    axiosClient.post('/users', userData),
+  provisionUser: (userData) =>
+    axiosClient.post('/admin/users', userData),
 
-  updateUserStatus: (userId, isActive) =>
-    axiosClient.put(`/users/${userId}/status`, { isActive }),
+  updateUserStatus: (userId, active) =>
+    axiosClient.put(`/admin/users/${userId}/status`, { active }),
 };
