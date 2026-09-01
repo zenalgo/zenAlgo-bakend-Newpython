@@ -1,11 +1,10 @@
 import asyncio
 import logging
 from typing import Dict, Set
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
-from jose import jwt, JWTError
-
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.security import decode_token
 from app.brokers.service import get_user_portfolio_summary
 
 logger = logging.getLogger(__name__)
@@ -50,14 +49,18 @@ manager = ConnectionManager()
 async def websocket_market_endpoint(websocket: WebSocket, token: str = Query(...)):
     """User-isolated WebSocket stream pushing real-time portfolio snapshots."""
     # Authenticate Platform JWT
+    payload = decode_token(token)
+    if not payload:
+        await websocket.close(code=1008)
+        return
+
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        user_id_str = payload.get("sub")
+        user_id_str = payload.get("sub") or payload.get("user_id")
         if not user_id_str:
             await websocket.close(code=1008)
             return
-        user_id = int(user_id_str)
-    except (JWTError, ValueError):
+        user_id = int(user_id_str) if str(user_id_str).isdigit() else 1
+    except (ValueError, TypeError):
         await websocket.close(code=1008)
         return
 

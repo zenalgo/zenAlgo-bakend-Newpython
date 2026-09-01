@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, Integer, DateTime, Date, ForeignKey, UniqueConstraint, Text
+from sqlalchemy import Column, BigInteger, String, Integer, DateTime, Date, ForeignKey, UniqueConstraint, Text, Numeric
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -11,8 +11,17 @@ class StrategySignal(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     strategy_id = Column(BigInteger, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
     strategy_version_id = Column(BigInteger, ForeignKey("strategy_versions.id", ondelete="CASCADE"), nullable=False)
-    trading_date = Column(Date, nullable=False)
-    entry_time = Column(String(10), nullable=False)
+    trading_date = Column(Date, nullable=False, default=func.current_date)
+    entry_time = Column(String(10), nullable=False, default="00:00")
+    
+    # Event-Driven Signal Engine Extensions
+    signal_key = Column(String(255), nullable=True, unique=True, index=True)
+    market_event_key = Column(String(255), nullable=True, index=True)
+    signal_type = Column(String(20), nullable=False, default="ENTRY", server_default="ENTRY")
+    direction = Column(String(20), nullable=False, default="BUY", server_default="BUY")
+    status = Column(String(30), nullable=False, default="CREATED", server_default="CREATED")
+    price = Column(Numeric(15, 2), nullable=True)
+    reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
