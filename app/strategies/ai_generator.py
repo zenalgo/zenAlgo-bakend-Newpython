@@ -205,41 +205,79 @@ class AIService:
 
     @staticmethod
     def _call_gemini(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
-        """Calls Google Gemini GenerateContent API."""
-        model_name = model or "gemini-1.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        """Calls Google Gemini GenerateContent API with multi-model and multi-version fallbacks."""
+        # Candidate models to try in sequence if one returns 404
+        candidates = []
+        if model:
+            candidates.append((model, "v1beta"))
+            candidates.append((model, "v1"))
+        
+        candidates.extend([
+            ("gemini-1.5-flash", "v1beta"),
+            ("gemini-1.5-flash-latest", "v1beta"),
+            ("gemini-2.0-flash", "v1beta"),
+            ("gemini-1.5-pro", "v1beta"),
+            ("gemini-pro", "v1beta"),
+            ("gemini-1.5-flash", "v1"),
+            ("gemini-pro", "v1"),
+        ])
 
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": f"{SYSTEM_PROMPT}\n\nUser Request: {prompt}\n\nReturn strictly valid JSON only."}
-                    ]
+        last_error = None
+
+        for model_name, api_ver in candidates:
+            url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model_name}:generateContent?key={api_key}"
+            
+            # Payload with clear system instruction and prompt
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": f"{SYSTEM_PROMPT}\n\nTrading Idea:\n{prompt}\n\nGenerate and return ONLY the valid JSON strategy object without markdown formatting."}
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0.2
                 }
-            ],
-            "generationConfig": {
-                "temperature": 0.2,
-                "responseMimeType": "application/json"
             }
-        }
 
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
 
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                candidate = data["candidates"][0]["content"]["parts"][0]["text"]
-                clean_json = re.sub(r"^```json\s*|\s*```$", "", candidate.strip(), flags=re.MULTILINE)
-                return json.loads(clean_json)
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8")
-            raise ValidationError(f"Google Gemini API Error ({e.code}): {err_body}")
-        except Exception as e:
-            raise ValidationError(f"Failed to connect to Gemini: {str(e)}")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    candidate_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    
+                    # Clean markdown codeblocks if present
+                    clean_text = candidate_text.strip()
+                    if clean_text.startswith("```"):
+                        clean_text = re.sub(r"^```(?:json)?\s*", "", clean_text, flags=re.IGNORECASE)
+                        clean_text = re.sub(r"\s*```$", "", clean_text)
+                    
+                    # Extract outermost JSON object if extra text exists
+                    json_match = re.search(r"\{.*\}", clean_text, re.DOTALL)
+                    if json_match:
+                        clean_text = json_match.group(0)
+                    
+                    return json.loads(clean_text)
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8")
+                last_error = f"Gemini Error ({e.code}) on {model_name} ({api_ver}): {err_body}"
+                if e.code == 404:
+                    # Model not found on this version, try next candidate
+                    continue
+                else:
+                    raise ValidationError(last_error)
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        raise ValidationError(last_error or "Failed to connect to Google Gemini API with provided key.")
 
     @staticmethod
     def _call_claude(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
