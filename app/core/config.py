@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     
     # JWT Settings
     JWT_SECRET: str = Field(default="supersecretjwtkeythatisatleast32charslong!")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
+    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 43200
     
     # Dhan Broker API Configuration
     DHAN_API_BASE_URL: str = Field(default="https://api.dhan.co/v2")

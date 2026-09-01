@@ -27,7 +27,14 @@ axiosClient.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const message = error.response?.data?.message || error.message || 'API request failed';
-    console.error('API Error:', message, error.response?.data);
+    if (error.response?.status === 401 || error.response?.data?.code === 'UNAUTHENTICATED') {
+      console.warn('Session expired or invalid token:', message);
+      if (message.toLowerCase().includes('expired') || message.toLowerCase().includes('invalid')) {
+        localStorage.removeItem('zenalgo_token');
+        localStorage.removeItem('zenalgo_user');
+        window.location.reload();
+      }
+    }
     return Promise.reject(error.response?.data || { message });
   }
 );

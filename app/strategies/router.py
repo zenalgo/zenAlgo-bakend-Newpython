@@ -473,7 +473,7 @@ async def update_strategy_admin(
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await StrategyService.update_strategy(db, id, body, current_admin.id)
+    res = await StrategyService.update_strategy(db, id, body, current_admin.id, is_admin=True)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
@@ -489,7 +489,7 @@ async def get_strategy_by_id_admin(
     current_admin = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await StrategyService.get_strategy_details(db, id, current_admin.id)
+    res = await StrategyService.get_strategy_details(db, id, current_admin.id, is_admin=True)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,

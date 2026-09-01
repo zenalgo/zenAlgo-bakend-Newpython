@@ -683,22 +683,23 @@ class StrategyService:
         return await build_strategy_response(db, strategy)
 
     @staticmethod
-    async def update_strategy(db: AsyncSession, strategy_id: int, request: StrategyRequest, user_id: int) -> StrategyResponse:
+    async def update_strategy(db: AsyncSession, strategy_id: int, request: StrategyRequest, user_id: int, is_admin: bool = False) -> StrategyResponse:
         request = map_request_from_builder(request)
 
         val_result = validate_strategy_request(request)
         if not val_result.valid:
             raise ValidationError(f"Strategy validation failed: {val_result.errors[0].message}", data=val_result.errors)
 
-        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id, is_admin=is_admin)
         if not strategy:
             raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
 
         stmt_dup = select(Strategy).where(
-            Strategy.user_id == user_id,
             Strategy.id != strategy_id,
             func.lower(Strategy.name) == request.name.strip().lower()
         )
+        if not is_admin:
+            stmt_dup = stmt_dup.where(Strategy.user_id == user_id)
         res_dup = await db.execute(stmt_dup)
         if res_dup.scalar_one_or_none():
             raise ValidationError(f"Another strategy with name '{request.name}' already exists.")
@@ -752,8 +753,8 @@ class StrategyService:
         return await build_strategy_response(db, strategy)
 
     @staticmethod
-    async def get_strategy_details(db: AsyncSession, strategy_id: int, user_id: int) -> StrategyResponse:
-        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+    async def get_strategy_details(db: AsyncSession, strategy_id: int, user_id: int, is_admin: bool = False) -> StrategyResponse:
+        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id, is_admin=is_admin)
         if not strategy:
             raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
         return await build_strategy_response(db, strategy)

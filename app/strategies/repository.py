@@ -13,8 +13,11 @@ class StrategyRepository:
         return res.scalar_one_or_none()
 
     @staticmethod
-    async def get_strategy_by_id_and_user(db: AsyncSession, strategy_id: int, user_id: int) -> Optional[Strategy]:
-        stmt = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
+    async def get_strategy_by_id_and_user(db: AsyncSession, strategy_id: int, user_id: Optional[int] = None, is_admin: bool = False) -> Optional[Strategy]:
+        if is_admin or user_id is None:
+            stmt = select(Strategy).where(Strategy.id == strategy_id)
+        else:
+            stmt = select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user_id)
         res = await db.execute(stmt)
         return res.scalar_one_or_none()
 
