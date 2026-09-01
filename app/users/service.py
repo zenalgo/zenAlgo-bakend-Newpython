@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List
+from typing import List, Optional
 
 from app.users.models import User, UserRole
 from app.users.schemas import ProvisionUserRequest, UserStatusUpdateRequest, UserDto

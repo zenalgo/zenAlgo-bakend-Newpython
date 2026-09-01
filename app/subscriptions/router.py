@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import pytz
 from datetime import datetime, date
-from typing import List
+from typing import List, Optional
 
 from app.core.database import get_db
 from app.core.schemas import ApiResponse

@@ -1,7 +1,7 @@
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List
+from typing import List, Optional
 
 from app.wallets.models import Wallet, WalletTransaction
 from app.core.exceptions import ResourceNotFoundError, ValidationError
