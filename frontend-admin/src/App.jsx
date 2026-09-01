@@ -18,6 +18,7 @@ export const App = () => {
   const { isAuthenticated } = useAuth();
   const [currentTab, setCurrentTab] = useState('dashboard');
   const [selectedStrategyId, setSelectedStrategyId] = useState(null);
+  const [editingStrategyId, setEditingStrategyId] = useState(null);
   const [isSimulateOpen, setIsSimulateOpen] = useState(false);
 
   if (!isAuthenticated) {
@@ -31,7 +32,10 @@ export const App = () => {
       case 'strategies':
         return (
           <StrategyListPage
-            onNavigateToBuilder={() => setCurrentTab('builder')}
+            onNavigateToBuilder={(editId) => {
+              setEditingStrategyId(editId || null);
+              setCurrentTab('builder');
+            }}
             onNavigateToOrders={(stratId) => {
               setSelectedStrategyId(stratId);
               setCurrentTab('placed-orders');
@@ -43,7 +47,13 @@ export const App = () => {
           />
         );
       case 'builder':
-        return <StrategyBuilderPage onNavigate={setCurrentTab} />;
+        return (
+          <StrategyBuilderPage
+            onNavigate={setCurrentTab}
+            editingStrategyId={editingStrategyId}
+            onClearEditing={() => setEditingStrategyId(null)}
+          />
+        );
       case 'placed-orders':
         return <PlacedOrdersPage selectedStrategyId={selectedStrategyId} />;
       case 'batches':

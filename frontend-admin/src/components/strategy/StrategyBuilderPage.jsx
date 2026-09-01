@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Sparkles,
   Plus,
@@ -12,6 +12,9 @@ import {
   FileJson,
   Zap,
   Bookmark,
+  Edit3,
+  XCircle,
+  Save,
 } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { useToast } from '../../context/ToastContext';
@@ -100,10 +103,11 @@ const PRESETS = {
   },
 };
 
-export const StrategyBuilderPage = ({ onNavigate }) => {
+export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEditing }) => {
   const { addToast } = useToast();
   const [activeTab, setActiveTab] = useState('FORM'); // 'FORM' or 'JSON'
   const [loading, setLoading] = useState(false);
+  const [fetchingExisting, setFetchingExisting] = useState(false);
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
 
   // Core Form State
@@ -131,6 +135,59 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
     setStratState(updated);
     setJsonText(JSON.stringify(updated, null, 2));
   };
+
+  // Fetch Existing Strategy for Editing if editingStrategyId is provided
+  useEffect(() => {
+    if (editingStrategyId) {
+      const fetchStrategyToEdit = async () => {
+        setFetchingExisting(true);
+        try {
+          const res = await strategyApi.getStrategyDetailsAdmin(editingStrategyId);
+          const data = res.data;
+          if (data) {
+            // Map backend StrategyResponse into Builder state
+            const mapped = {
+              ...PRESETS.EMA_PULLBACK,
+              id: data.id,
+              name: data.name || `Strategy #${data.id}`,
+              description: data.description || '',
+              underlying: data.underlying || 'NIFTY 50',
+              entryTimeframe: data.timeframe || '5m',
+              status: data.status || 'DRAFT',
+              entryConditions: (data.entryConditions || []).map((c) =>
+                typeof c === 'string' ? c : c.rawText || c.name || JSON.stringify(c)
+              ),
+              exitConditions: (data.exitConditions || []).map((c) =>
+                typeof c === 'string' ? c : c.rawText || c.name || JSON.stringify(c)
+              ),
+              config: {
+                ...PRESETS.EMA_PULLBACK.config,
+                options: {
+                  legs: (data.legs || []).map((l) => ({
+                    action: l.side || 'BUY',
+                    type: (l.positionType || '').toUpperCase() === 'CALL' ? 'CE' : 'PE',
+                    strike: l.strikeSelection || 'ATM',
+                    expiry: l.expiry || 'Current Weekly',
+                    quantity: String(l.quantity || 50),
+                  })),
+                },
+              },
+            };
+            setStratState(mapped);
+            setJsonText(JSON.stringify(mapped, null, 2));
+            addToast(`Loaded Strategy #${editingStrategyId} for editing!`, 'info');
+          }
+        } catch (err) {
+          console.error(err);
+          addToast(`Failed to load Strategy #${editingStrategyId}: ${err.message}`, 'error');
+        } finally {
+          setFetchingExisting(false);
+        }
+      };
+
+      fetchStrategyToEdit();
+    }
+  }, [editingStrategyId]);
 
   // Load Preset
   const handleLoadPreset = (key) => {
@@ -225,8 +282,8 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
     updateStrat({ exitConditions: cur });
   };
 
-  // Save Strategy to Backend
-  const handleSaveStrategy = async () => {
+  // Save / Update Strategy to Backend
+  const handleSaveOrUpdateStrategy = async () => {
     setLoading(true);
     let finalPayload;
     if (activeTab === 'JSON') {
@@ -239,7 +296,6 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
       }
     } else {
       finalPayload = {
-        id: stratState.id || `STRAT_${Date.now()}`,
         name: stratState.name,
         description: stratState.description,
         underlying: stratState.underlying || 'NIFTY 50',
@@ -247,16 +303,21 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
         mode: 'PAPER',
         entrySetting: {
           entryType: 'INTRADAY',
+          entryTime: '09:15',
           reEntryLimit: parseInt(stratState.config?.riskManagement?.maxTradesPerDay || 3),
         },
         entryDays: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'],
         exitSetting: {
           exitType: 'TIME_BASED',
-          exitTime: '15:15:00',
+          exitTime: '15:15',
         },
-        entryConditions: (stratState.entryConditions || []).map((r) => ({ rawText: r })),
-        exitConditions: (stratState.exitConditions || []).map((r) => ({ rawText: r })),
-        legs: (stratState.config?.options?.legs || []).map((l) => ({
+        entryConditions: (stratState.entryConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
+        exitConditions: (stratState.exitConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
+        legs: (stratState.config?.options?.legs || []).map((l, idx) => ({
+          sequence: idx + 1,
+          segment: 'OPT',
+          expiry: 'WEEKLY',
+          lots: 1,
           instrumentType: 'OPT',
           side: l.action || 'BUY',
           positionType: l.type === 'CE' ? 'CALL' : 'PUT',
@@ -269,22 +330,72 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
     }
 
     try {
-      const res = await strategyApi.createStrategy(finalPayload);
-      addToast(`Strategy "${finalPayload.name}" saved! ID: #${res.data?.id || 'NEW'}`, 'success');
+      if (editingStrategyId) {
+        await strategyApi.updateStrategy(editingStrategyId, finalPayload);
+        addToast(`Strategy #${editingStrategyId} updated successfully!`, 'success');
+        if (onClearEditing) onClearEditing();
+      } else {
+        const res = await strategyApi.createStrategy(finalPayload);
+        addToast(`Strategy "${finalPayload.name}" saved! ID: #${res.data?.id || 'NEW'}`, 'success');
+      }
       if (onNavigate) onNavigate('strategies');
     } catch (err) {
-      addToast(err.message || 'Failed to create strategy', 'error');
+      addToast(err.message || 'Failed to save strategy', 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleCancelEditing = () => {
+    if (onClearEditing) onClearEditing();
+    setStratState(PRESETS.EMA_PULLBACK);
+    setJsonText(JSON.stringify(PRESETS.EMA_PULLBACK, null, 2));
+    addToast('Exited edit mode.', 'info');
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      
+      {/* Edit Mode Notification Banner */}
+      {editingStrategyId && (
+        <div className="glass-panel" style={{
+          padding: '16px 20px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.1) 100%)',
+          border: '1px solid rgba(245, 158, 11, 0.5)',
+          borderRadius: '8px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Edit3 size={20} color="#f59e0b" />
+            <div>
+              <strong style={{ color: '#fff', fontSize: '0.95rem' }}>
+                ✏️ Editing Strategy #{editingStrategyId}: <span style={{ color: '#f59e0b' }}>{stratState.name}</span>
+              </strong>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                Modify indicator rules, parameters, legs, or timeframe, then click "Update Strategy" below.
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={handleCancelEditing}
+            className="btn btn-secondary"
+            style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+          >
+            <XCircle size={14} />
+            <span>Cancel / Build New</span>
+          </button>
+        </div>
+      )}
+
       {/* Header & Mode Switcher */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Institutional Strategy Builder</h1>
+          <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>
+            {editingStrategyId ? `Edit Strategy #${editingStrategyId}` : 'Institutional Strategy Builder'}
+          </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             Full Schema v2.0.0 with dual persistence, multi-leg hedging, and multi-model AI synthesis.
           </p>
@@ -457,7 +568,7 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
                   </span>
                   <input
                     type="text"
-                    value={cond}
+                    value={typeof cond === 'string' ? cond : cond.rawText || ''}
                     onChange={(e) => updateEntryCondition(idx, e.target.value)}
                     className="input-field font-mono"
                     style={{ flex: 1 }}
@@ -490,7 +601,7 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
                   </span>
                   <input
                     type="text"
-                    value={cond}
+                    value={typeof cond === 'string' ? cond : cond.rawText || ''}
                     onChange={(e) => updateExitCondition(idx, e.target.value)}
                     className="input-field font-mono"
                     style={{ flex: 1 }}
@@ -560,12 +671,29 @@ export const StrategyBuilderPage = ({ onNavigate }) => {
 
       {/* Save & Submit Toolbar */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
-        <button onClick={() => onNavigate && onNavigate('strategies')} className="btn btn-secondary">
+        <button
+          onClick={() => {
+            if (onClearEditing) onClearEditing();
+            if (onNavigate) onNavigate('strategies');
+          }}
+          className="btn btn-secondary"
+        >
           Cancel
         </button>
-        <button onClick={handleSaveStrategy} disabled={loading} className="btn btn-primary" style={{ padding: '10px 24px' }}>
-          <CheckCircle size={16} />
-          <span>{loading ? 'Validating & Saving...' : 'Save Strategy Fleet'}</span>
+        <button
+          onClick={handleSaveOrUpdateStrategy}
+          disabled={loading || fetchingExisting}
+          className="btn btn-primary"
+          style={{ padding: '10px 24px', background: editingStrategyId ? 'var(--accent-amber)' : undefined, color: editingStrategyId ? '#000' : '#fff' }}
+        >
+          {editingStrategyId ? <Save size={16} /> : <CheckCircle size={16} />}
+          <span>
+            {loading
+              ? 'Saving Changes...'
+              : editingStrategyId
+              ? `💾 Update Strategy #${editingStrategyId}`
+              : 'Save Strategy Fleet'}
+          </span>
         </button>
       </div>
 

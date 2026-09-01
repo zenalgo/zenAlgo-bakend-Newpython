@@ -7,8 +7,14 @@ export const strategyApi = {
   getStrategyById: (id) =>
     axiosClient.get(`/strategies/${id}`),
 
+  getStrategyDetailsAdmin: (id) =>
+    axiosClient.get(`/admin/strategies/${id}`),
+
   createStrategy: (payload) =>
     axiosClient.post('/admin/strategies', payload),
+
+  updateStrategy: (id, payload) =>
+    axiosClient.put(`/admin/strategies/${id}`, payload),
 
   validateStrategy: (payload) =>
     axiosClient.post('/strategies/validate', payload),
