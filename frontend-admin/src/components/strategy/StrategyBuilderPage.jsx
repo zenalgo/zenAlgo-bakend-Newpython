@@ -15,6 +15,7 @@ import {
   Edit3,
   XCircle,
   Save,
+  Play,
 } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { useToast } from '../../context/ToastContext';
@@ -346,6 +347,75 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
     }
   };
 
+  const handleSaveAndDeploy = async () => {
+    setLoading(true);
+    let finalPayload;
+    if (activeTab === 'JSON') {
+      try {
+        finalPayload = JSON.parse(jsonText);
+      } catch (err) {
+        addToast('Invalid JSON structure. Please check syntax.', 'error');
+        setLoading(false);
+        return;
+      }
+    } else {
+      finalPayload = {
+        name: stratState.name,
+        description: stratState.description,
+        underlying: stratState.underlying || 'NIFTY 50',
+        timeframe: stratState.entryTimeframe || '5m',
+        mode: 'PAPER',
+        entrySetting: {
+          entryType: 'INTRADAY',
+          entryTime: '09:15',
+          reEntryLimit: parseInt(stratState.config?.riskManagement?.maxTradesPerDay || 3),
+        },
+        entryDays: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'],
+        exitSetting: {
+          exitType: 'TIME_BASED',
+          exitTime: '15:15',
+        },
+        entryConditions: (stratState.entryConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
+        exitConditions: (stratState.exitConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
+        legs: (stratState.config?.options?.legs || []).map((l, idx) => ({
+          sequence: idx + 1,
+          segment: 'OPT',
+          expiry: 'WEEKLY',
+          lots: 1,
+          instrumentType: 'OPT',
+          side: l.action || 'BUY',
+          positionType: l.type === 'CE' ? 'CALL' : 'PUT',
+          strikeSelection: l.strike || 'ATM',
+          quantity: parseInt(l.quantity || 50),
+          stopLossPoints: 30.0,
+          targetPoints: 60.0,
+        })),
+      };
+    }
+
+    try {
+      let savedId = editingStrategyId;
+      if (editingStrategyId) {
+        await strategyApi.updateStrategy(editingStrategyId, finalPayload);
+        addToast(`Strategy #${editingStrategyId} updated successfully!`, 'success');
+      } else {
+        const res = await strategyApi.createStrategy(finalPayload);
+        savedId = res.data?.id;
+        addToast(`Strategy "${finalPayload.name}" saved!`, 'success');
+      }
+      if (savedId) {
+        await strategyApi.activatePaper(savedId);
+        addToast(`🚀 Strategy #${savedId} activated live in PAPER mode!`, 'success');
+      }
+      if (onClearEditing) onClearEditing();
+      if (onNavigate) onNavigate('strategies');
+    } catch (err) {
+      addToast(err.message || 'Failed to save and deploy', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleCancelEditing = () => {
     if (onClearEditing) onClearEditing();
     setStratState(PRESETS.EMA_PULLBACK);
@@ -534,6 +604,32 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
                   <option value="15m">15m Candle</option>
                 </select>
               </div>
+
+              <div>
+                <label>Strategy Status</label>
+                <select
+                  value={stratState.status || 'ACTIVE_LIVE'}
+                  onChange={(e) => updateStrat({ status: e.target.value })}
+                  className="input-field"
+                  style={{ borderColor: stratState.status === 'ACTIVE_LIVE' ? 'var(--accent-emerald)' : undefined }}
+                >
+                  <option value="ACTIVE_LIVE">🟢 ACTIVE_LIVE (Live Market Tracking)</option>
+                  <option value="DRAFT">⏳ DRAFT (Saved as Inactive Draft)</option>
+                  <option value="PAUSED">⏸️ PAUSED (Halt Execution)</option>
+                </select>
+              </div>
+
+              <div>
+                <label>Trading Mode</label>
+                <select
+                  value={stratState.mode || 'PAPER'}
+                  onChange={(e) => updateStrat({ mode: e.target.value })}
+                  className="input-field"
+                >
+                  <option value="PAPER">📝 PAPER (Live NSE Ticks)</option>
+                  <option value="LIVE">⚡ LIVE (Direct Broker Gateway)</option>
+                </select>
+              </div>
             </div>
 
             <div>
@@ -670,7 +766,7 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
       )}
 
       {/* Save & Submit Toolbar */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px', flexWrap: 'wrap' }}>
         <button
           onClick={() => {
             if (onClearEditing) onClearEditing();
@@ -683,17 +779,27 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         <button
           onClick={handleSaveOrUpdateStrategy}
           disabled={loading || fetchingExisting}
-          className="btn btn-primary"
-          style={{ padding: '10px 24px', background: editingStrategyId ? 'var(--accent-amber)' : undefined, color: editingStrategyId ? '#000' : '#fff' }}
+          className="btn btn-secondary"
+          style={{ padding: '10px 20px', borderColor: 'var(--border-subtle)' }}
         >
-          {editingStrategyId ? <Save size={16} /> : <CheckCircle size={16} />}
-          <span>
-            {loading
-              ? 'Saving Changes...'
-              : editingStrategyId
-              ? `💾 Update Strategy #${editingStrategyId}`
-              : 'Save Strategy Fleet'}
-          </span>
+          <Save size={16} />
+          <span>Save as Draft</span>
+        </button>
+        <button
+          onClick={handleSaveAndDeploy}
+          disabled={loading || fetchingExisting}
+          className="btn btn-emerald"
+          style={{
+            padding: '10px 24px',
+            background: 'linear-gradient(135deg, #10b981 0%, #06b6d4 100%)',
+            color: '#fff',
+            fontWeight: 800,
+            border: 'none',
+            boxShadow: '0 0 15px rgba(16, 185, 129, 0.4)'
+          }}
+        >
+          <Play size={16} />
+          <span>🚀 Save & Deploy to Fleet</span>
         </button>
       </div>
 

@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, date, time
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -153,8 +154,10 @@ async def check_and_trigger_strategies() -> None:
 
 async def check_and_execute_live_exits() -> None:
     """Evaluates all RUNNING strategy executions against live market Target, Stop Loss, and EOD Cutoff."""
-    from app.strategies.models import StrategyExecution
+    from app.strategies.models import StrategyExecution, Strategy, StrategyVersion
     from app.market_data.live_market_service import get_real_strategy_contract
+    from app.strategies.exit_calculator import extract_target_and_sl_config, calculate_exit_levels, validate_market_quote_freshness, is_eod_cutoff_reached
+    from app.strategies.service import load_builder_fields
     from datetime import datetime, timezone
     from decimal import Decimal
 
@@ -169,29 +172,59 @@ async def check_and_execute_live_exits() -> None:
                 if not strat:
                     continue
 
-                stmt_ver = select(StrategyVersion).where(StrategyVersion.id == ex.strategy_version_id)
+                stmt_ver = select(StrategyVersion).where(StrategyVersion.id == ex.strategy_version_id).options(
+                    selectinload(StrategyVersion.exit_setting),
+                    selectinload(StrategyVersion.legs)
+                )
                 res_ver = await db.execute(stmt_ver)
                 version = res_ver.scalar_one_or_none()
                 underlying = version.underlying if version else "NIFTY 50"
 
                 spec = await get_real_strategy_contract(underlying, strat.name, strat.id)
-                current_pnl = float(spec["pnl"])
+                
+                # Validate market quote freshness before evaluating exit decision
+                is_fresh, val_msg = validate_market_quote_freshness(spec, expected_symbol=None, max_age_seconds=60.0)
+                if not is_fresh:
+                    logger.warning(f"Market quote invalid/stale for Strategy #{strat.id}: {val_msg}")
+                    continue
 
-                # Target (+₹500) and Stop Loss (-₹300) thresholds
+                builder = load_builder_fields(strat)
+                target_val, target_type, sl_val, sl_type = extract_target_and_sl_config(builder, version)
+
+                real_entry = float(spec["entryPrice"])
+                actual_qty = int(spec["lotSize"])
+                current_ltp_f = float(spec["currentLtp"])
+
+                levels = calculate_exit_levels(
+                    entry_price=real_entry,
+                    quantity=actual_qty,
+                    current_ltp=current_ltp_f,
+                    target_val=target_val,
+                    target_type=target_type,
+                    sl_val=sl_val,
+                    sl_type=sl_type,
+                    direction="BUY"
+                )
+
+                is_eod_met = is_eod_cutoff_reached("15:15")
+
                 exit_matched = False
                 exit_reason = ""
-                if current_pnl >= 500.0:
+                if levels.is_target_met:
                     exit_matched = True
-                    exit_reason = f"🎯 TARGET PROFIT HIT: +₹{current_pnl:.2f} ({spec['symbol']} @ ₹{spec['currentLtp']})"
-                elif current_pnl <= -300.0:
+                    exit_reason = f"🎯 TARGET PROFIT ACHIEVED: +₹{levels.current_pnl:.2f} (LTP ₹{current_ltp_f:.2f} >= Target ₹{levels.target_price:.2f} on {spec['symbol']})"
+                elif levels.is_sl_met:
                     exit_matched = True
-                    exit_reason = f"🛑 STOP LOSS HIT: -₹{abs(current_pnl):.2f} ({spec['symbol']} @ ₹{spec['currentLtp']})"
+                    exit_reason = f"🛑 STOP LOSS HIT: ₹{levels.current_pnl:.2f} (LTP ₹{current_ltp_f:.2f} <= SL ₹{levels.stop_loss_price:.2f} on {spec['symbol']})"
+                elif is_eod_met:
+                    exit_matched = True
+                    exit_reason = f"⏰ 15:15 IST MANDATORY EOD SQUARE-OFF: PnL ₹{levels.current_pnl:.2f} ({spec['symbol']} @ ₹{current_ltp_f:.2f})"
 
                 if exit_matched:
                     now_utc = datetime.now(timezone.utc)
                     ex.status = "SQUARED_OFF"
                     ex.exit_time = now_utc
-                    ex.realized_pnl = spec["pnl"]
+                    ex.realized_pnl = Decimal(str(levels.current_pnl))
                     ex.unrealized_pnl = Decimal("0.00")
                     ex.execution_logs = (ex.execution_logs or "") + f" | Auto Exit: {exit_reason}"
                     db.add(ex)

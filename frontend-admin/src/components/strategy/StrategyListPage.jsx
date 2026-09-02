@@ -79,23 +79,26 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
     return () => clearTimeout(handler);
   }, [search]);
 
+  const isFavId = (id) => favorites.map(String).includes(String(id));
+
   // Toggle Favorite (Max 5)
   const handleToggleFavorite = (id) => {
     const sId = String(id);
     let newFavs;
-    if (favorites.includes(sId)) {
-      newFavs = favorites.filter((f) => f !== sId);
+    if (favorites.map(String).includes(sId)) {
+      newFavs = favorites.map(String).filter((f) => f !== sId);
       addToast(`Removed Strategy #${id} from Favorites`, 'info');
     } else {
       if (favorites.length >= 5) {
         addToast('You can pin up to 5 favorite strategies. Unstar one to add another.', 'warning');
         return;
       }
-      newFavs = [...favorites, sId];
-      addToast(`⭐ Added Strategy #${id} to Top 5 Favorites!`, 'success');
+      newFavs = [...favorites.map(String), sId];
+      addToast(`⭐ Pinned Strategy #${id} to Top 5 Favorites!`, 'success');
     }
     setFavorites(newFavs);
     localStorage.setItem('zenalgo_favorite_strategy_ids', JSON.stringify(newFavs));
+    window.dispatchEvent(new Event('zenalgo_favorites_updated'));
   };
 
   const handleDeploy = async (id, mode = 'PAPER') => {
@@ -143,13 +146,13 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
     }
   };
 
-  // Filter strategies by favorites if active
+  // Filter and sort strategies with Pinned Favorites at the top
   const displayedStrategies = showFavoritesOnly
-    ? strategies.filter((s) => favorites.includes(String(s.id)))
-    : strategies;
+    ? strategies.filter((s) => isFavId(s.id))
+    : [...strategies].sort((a, b) => (isFavId(b.id) ? 1 : 0) - (isFavId(a.id) ? 1 : 0));
 
   // Top 5 favorite objects for quick-access banner
-  const top5FavoriteStrats = strategies.filter((s) => favorites.includes(String(s.id)));
+  const top5FavoriteStrats = strategies.filter((s) => isFavId(s.id));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

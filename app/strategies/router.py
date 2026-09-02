@@ -648,58 +648,62 @@ async def evaluate_strategy_exit_endpoint(
         )
 
     # Fetch real-time market data & current option LTP
+    from app.strategies.exit_calculator import extract_target_and_sl_config, calculate_exit_levels, validate_market_quote_freshness, is_eod_cutoff_reached
     spec = await get_real_strategy_contract(underlying, strat.name, strat.id)
-    current_pnl = float(spec["pnl"])
+    
+    # 1. Validate market data quote freshness before evaluating exit
+    is_fresh, val_msg = validate_market_quote_freshness(spec, expected_symbol=None, max_age_seconds=60.0)
+    if not is_fresh:
+        logger.warning(f"Market data validation failed for Strategy #{id}: {val_msg}")
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=False,
+            message=f"Exit evaluation paused: {val_msg}",
+            data={"strategyId": id, "exitMatched": False, "status": active_ex.status, "reason": val_msg},
+            requestId=request_id
+        )
+
+    real_entry = float(spec["entryPrice"])
+    actual_qty = int(spec["lotSize"])
+    current_ltp_f = float(spec["currentLtp"])
     now_utc = datetime.now(timezone.utc)
 
     # Extract custom strategy builder rules & exit settings
     from app.strategies.service import load_builder_fields
     builder = load_builder_fields(strat)
+    target_val, target_type, sl_val, sl_type = extract_target_and_sl_config(builder, version)
 
-    # 1. Custom Target Profit Threshold from Strategy Config
-    target_config = builder.get("target") or {}
-    target_val = float(target_config.get("value") or 20) if isinstance(target_config, dict) else 20.0
-    target_type = target_config.get("type", "POINTS").upper() if isinstance(target_config, dict) else "POINTS"
-    
-    if target_type == "PERCENTAGE":
-        capital = float(version.capital or 100000.0)
-        target_threshold = capital * (target_val / 100.0)
-    else: # POINTS
-        target_threshold = target_val * spec["lotSize"]
+    # Calculate unified dynamic exit levels
+    levels = calculate_exit_levels(
+        entry_price=real_entry,
+        quantity=actual_qty,
+        current_ltp=current_ltp_f,
+        target_val=target_val,
+        target_type=target_type,
+        sl_val=sl_val,
+        sl_type=sl_type,
+        direction="BUY"
+    )
 
-    # 2. Custom Stop Loss Threshold from Strategy Config
-    risk_config = builder.get("riskManagement") or {}
-    sl_val = float(risk_config.get("stopLossValue") or 10) if isinstance(risk_config, dict) else 10.0
-    sl_type = risk_config.get("stopLossType", "POINTS").upper() if isinstance(risk_config, dict) else "POINTS"
-
-    if sl_type == "PERCENTAGE":
-        capital = float(version.capital or 100000.0)
-        stop_loss_threshold = -1.0 * (capital * (sl_val / 100.0))
-    else: # POINTS
-        stop_loss_threshold = -1.0 * (sl_val * spec["lotSize"])
-
-    # 3. Custom Time Cutoff
-    exit_setting = version.exit_setting if version else None
-    exit_time_str = exit_setting.exit_time if exit_setting else "15:15"
-    
-    # 4. Custom Indicator Exit Rules
-    exit_rules = builder.get("exitConditions") or []
-    exit_rule_text = exit_rules[0].rawText if exit_rules and hasattr(exit_rules[0], "rawText") else (exit_rules[0] if exit_rules and isinstance(exit_rules[0], str) else "Target / SL Cutoff")
+    is_eod_met = is_eod_cutoff_reached("15:15")
 
     exit_matched = False
     exit_reason = ""
 
-    if current_pnl >= target_threshold:
+    if levels.is_target_met:
         exit_matched = True
-        exit_reason = f"🎯 TARGET PROFIT ACHIEVED: +₹{current_pnl:.2f} (Target reached on {spec['symbol']} at LTP ₹{spec['currentLtp']})"
-    elif current_pnl <= stop_loss_threshold:
+        exit_reason = f"🎯 TARGET PROFIT ACHIEVED: +₹{levels.current_pnl:.2f} (LTP ₹{current_ltp_f:.2f} >= Target ₹{levels.target_price:.2f} on {spec['symbol']})"
+    elif levels.is_sl_met:
         exit_matched = True
-        exit_reason = f"🛑 STOP LOSS HIT: -₹{abs(current_pnl):.2f} (SL triggered on {spec['symbol']} at LTP ₹{spec['currentLtp']})"
+        exit_reason = f"🛑 STOP LOSS HIT: ₹{levels.current_pnl:.2f} (LTP ₹{current_ltp_f:.2f} <= SL ₹{levels.stop_loss_price:.2f} on {spec['symbol']})"
+    elif is_eod_met:
+        exit_matched = True
+        exit_reason = f"⏰ 15:15 IST MANDATORY EOD SQUARE-OFF: PnL ₹{levels.current_pnl:.2f} ({spec['symbol']} @ ₹{current_ltp_f:.2f})"
 
     if exit_matched:
         active_ex.status = "SQUARED_OFF"
         active_ex.exit_time = now_utc
-        active_ex.realized_pnl = spec["pnl"]
+        active_ex.realized_pnl = Decimal(str(levels.current_pnl))
         active_ex.unrealized_pnl = Decimal("0.00")
         active_ex.execution_logs = (active_ex.execution_logs or "") + f" | Live Exit Condition: {exit_reason}"
         db.add(active_ex)
@@ -711,14 +715,19 @@ async def evaluate_strategy_exit_endpoint(
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
-        message=exit_reason if exit_matched else f"Live exit evaluation: Position RUNNING at LTP ₹{spec['currentLtp']} (Live PnL: +₹{current_pnl:.2f})",
+        message=exit_reason if exit_matched else f"Live exit evaluation: Position RUNNING at LTP ₹{current_ltp_f:.2f} (Live PnL: +₹{levels.current_pnl:.2f}, Target: ₹{levels.target_price:.2f}, SL: ₹{levels.stop_loss_price:.2f})",
         data={
             "strategyId": id,
             "exitMatched": exit_matched,
             "exitReason": exit_reason if exit_matched else "Monitoring active trade against Target / Stop Loss / 15:15 Cutoff",
             "liveSpot": spec["spot"],
-            "liveLtp": float(spec["currentLtp"]),
-            "currentPnl": current_pnl,
+            "liveLtp": current_ltp_f,
+            "currentPnl": levels.current_pnl,
+            "targetPrice": levels.target_price,
+            "targetProfit": levels.target_profit,
+            "stopLossPrice": levels.stop_loss_price,
+            "maxRisk": levels.max_risk,
+            "progressPct": levels.progress_pct,
             "status": active_ex.status
         },
         requestId=request_id

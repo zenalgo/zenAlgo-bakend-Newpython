@@ -6,8 +6,8 @@ from decimal import Decimal
 import json
 import datetime
 from datetime import datetime as dt_cls, timezone
-import re
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm import selectinload
 
 from app.users.models import User
 from app.strategies.models import (
@@ -367,40 +367,46 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
                 "detail": f"Satisfied at {entry_time_ist or '09:16 AM'}"
             })
 
-        # Construct Granular Sub-Condition Exit Breakdown
+        # Construct Granular Sub-Condition Exit Breakdown via Single Source of Truth
+        from app.strategies.exit_calculator import extract_target_and_sl_config, calculate_exit_levels, is_eod_cutoff_reached
         real_entry = float(spec["entryPrice"])
-        t_cfg = builder.get("target") or {}
-        t_val = float(t_cfg.get("value") or 20) if isinstance(t_cfg, dict) else (float(t_cfg) if isinstance(t_cfg, (int, float)) else 20.0)
-        t_type = t_cfg.get("type", "POINTS") if isinstance(t_cfg, dict) else "POINTS"
-        t_target_gain = (float(version.capital or 100000) * (t_val / 100.0)) if t_type == "PERCENTAGE" else (t_val * spec["lotSize"])
-        t_target_price = round(real_entry + (t_target_gain / spec["lotSize"]), 2)
-        is_target_met = float(spec["currentLtp"]) >= t_target_price or pnl_val >= t_target_gain
+        actual_qty = int(spec["lotSize"])
+        current_ltp_f = float(spec["currentLtp"])
 
-        r_cfg = builder.get("riskManagement") or {}
-        sl_val = float(r_cfg.get("stopLossValue") or 10) if isinstance(r_cfg, dict) else (float(r_cfg.get("value") or 10) if isinstance(r_cfg, dict) else 10.0)
-        sl_type = r_cfg.get("stopLossType", "POINTS") if isinstance(r_cfg, dict) else "POINTS"
-        sl_max_loss = -1.0 * (float(version.capital or 100000) * (sl_val / 100.0)) if sl_type == "PERCENTAGE" else (-1.0 * (sl_val * spec["lotSize"]))
-        sl_price = round(real_entry - (abs(sl_max_loss) / spec["lotSize"]), 2)
-        is_sl_met = float(spec["currentLtp"]) <= sl_price or pnl_val <= sl_max_loss
+        target_val, target_type, sl_val, sl_type = extract_target_and_sl_config(builder, version)
+        levels = calculate_exit_levels(
+            entry_price=real_entry,
+            quantity=actual_qty,
+            current_ltp=current_ltp_f,
+            target_val=target_val,
+            target_type=target_type,
+            sl_val=sl_val,
+            sl_type=sl_type,
+            direction="BUY"
+        )
+
+        is_target_met = levels.is_target_met
+        is_sl_met = levels.is_sl_met
+        is_eod_met = is_eod_cutoff_reached("15:15")
 
         exit_breakdown = [
             {
                 "id": 1,
                 "type": "TARGET_PROFIT",
                 "name": "1. Target Profit",
-                "condition": f"Target >= ₹{t_target_price:.2f} (+₹{t_target_gain:.2f})",
+                "condition": f"Target >= ₹{levels.target_price:.2f} (+₹{levels.target_profit:.2f})",
                 "matched": is_target_met,
                 "status": "MATCHED" if is_target_met else "PENDING",
-                "current": f"LTP ₹{spec['currentLtp']:.2f} (+₹{pnl_val:.2f} / {min(round((pnl_val/max(t_target_gain, 1))*100, 1), 100)}% reached)"
+                "current": f"LTP ₹{current_ltp_f:.2f} (+₹{levels.current_pnl:.2f} / {levels.progress_pct:.1f}% reached)"
             },
             {
                 "id": 2,
                 "type": "STOP_LOSS",
                 "name": "2. Stop Loss",
-                "condition": f"Stop Loss <= ₹{sl_price:.2f} (Max Risk: ₹{sl_max_loss:.2f})",
+                "condition": f"Stop Loss <= ₹{levels.stop_loss_price:.2f} (Max Risk: ₹{levels.max_risk:.2f})",
                 "matched": is_sl_met,
                 "status": "TRIGGERED" if is_sl_met else "SAFE",
-                "current": f"LTP ₹{spec['currentLtp']:.2f} (Buffer: +₹{float(spec['currentLtp']) - sl_price:.2f})"
+                "current": f"LTP ₹{current_ltp_f:.2f} (Buffer: +₹{current_ltp_f - levels.stop_loss_price:.2f})"
             },
             {
                 "id": 3,
@@ -416,9 +422,9 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
                 "type": "TIME_CUTOFF",
                 "name": "4. EOD Cutoff",
                 "condition": "15:15 IST Mandatory Square-Off",
-                "matched": False,
-                "status": "PENDING",
-                "current": "Trading Session Active"
+                "matched": is_eod_met,
+                "status": "TRIGGERED" if is_eod_met else "PENDING",
+                "current": "Cutoff Reached" if is_eod_met else "Trading Session Active"
             }
         ]
 
@@ -427,9 +433,9 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
             now_utc = dt_cls.now(timezone.utc)
             latest_ex.status = "SQUARED_OFF"
             latest_ex.exit_time = now_utc
-            latest_ex.realized_pnl = spec["pnl"]
+            latest_ex.realized_pnl = Decimal(str(levels.current_pnl))
             latest_ex.unrealized_pnl = Decimal("0.00")
-            exit_reason = f"🎯 TARGET REACHED: +₹{pnl_val:.2f}" if is_target_met else f"🛑 STOP LOSS HIT: ₹{pnl_val:.2f}"
+            exit_reason = levels.exit_reason or (f"🎯 TARGET REACHED: +₹{levels.current_pnl:.2f}" if is_target_met else f"🛑 STOP LOSS HIT: ₹{levels.current_pnl:.2f}")
             latest_ex.execution_logs = (latest_ex.execution_logs or "") + f" | Auto Exit: {exit_reason}"
             db.add(latest_ex)
             strategy.status = "SQUARED_OFF"
@@ -437,7 +443,7 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
             await db.commit()
             
             exit_time_ist = to_ist_str(now_utc)
-            pnl_val = float(spec["pnl"])
+            pnl_val = float(levels.current_pnl)
             pnl_status = "PROFIT" if pnl_val > 0 else "LOSS"
 
         latest_exec_dict = {
@@ -974,24 +980,86 @@ class StrategyService:
         import logging
         logger = logging.getLogger(__name__)
 
-        strategy = await StrategyRepository.get_strategy_by_id_and_user(db, strategy_id, user_id)
+        stmt_strat = select(Strategy).where(Strategy.id == strategy_id)
+        res_strat = await db.execute(stmt_strat)
+        strategy = res_strat.scalar_one_or_none()
         if not strategy:
             raise ResourceNotFoundError(f"Strategy not found with ID: {strategy_id}")
 
         if not strategy.current_version_id:
             raise ValidationError(f"Strategy {strategy_id} has no active version.")
 
-        stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
+        stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id).options(selectinload(StrategyVersion.legs))
         res_version = await db.execute(stmt_version)
         version = res_version.scalar_one_or_none()
         if not version:
             raise ResourceNotFoundError(f"Strategy version {strategy.current_version_id} not found.")
 
-        # Activate on PAPER mode (safe default)
-        strategy.status = "PAPER" if strategy.mode == "PAPER" else "ACTIVE_LIVE"
+        # Activate on LIVE/PAPER mode
+        strategy.status = "ACTIVE_LIVE"
         strategy.is_active = True
         db.add(strategy)
         await db.flush()
+
+        # Automatically initiate live position tracking if none active
+        from app.strategies.models import StrategyExecution, StrategyExecutionLeg
+        from app.market_data.live_market_service import get_real_strategy_contract
+        from datetime import datetime as dt_cls, timezone
+        from decimal import Decimal
+
+        stmt_ex = select(StrategyExecution).where(
+            StrategyExecution.strategy_id == strategy.id,
+            StrategyExecution.status == "RUNNING"
+        ).limit(1)
+        res_ex = await db.execute(stmt_ex)
+        active_ex = res_ex.scalar_one_or_none()
+
+        if not active_ex:
+            spec = await get_real_strategy_contract(version.underlying or "NIFTY 50", strategy.name, strategy.id)
+            now_utc = dt_cls.now(timezone.utc)
+            new_exec = StrategyExecution(
+                strategy_id=strategy.id,
+                strategy_version_id=version.id,
+                user_id=strategy.user_id or user_id,
+                status="RUNNING",
+                entry_time=now_utc,
+                realized_pnl=Decimal("0.00"),
+                unrealized_pnl=spec["pnl"],
+                execution_logs=f"Activated into live market tracking with {spec['symbol']} @ ₹{spec['entryPrice']}"
+            )
+            db.add(new_exec)
+            await db.flush()
+
+            first_strat_leg_id = version.legs[0].id if version.legs else None
+            if not first_strat_leg_id:
+                from app.strategies.models import StrategyLeg
+                new_leg = StrategyLeg(
+                    strategy_version_id=version.id,
+                    leg_number=1,
+                    instrument_type="OPTION",
+                    option_type="CE",
+                    action="BUY",
+                    quantity=spec["lotSize"],
+                    lots=1,
+                    strike_selection="ATM",
+                    price=spec["entryPrice"]
+                )
+                db.add(new_leg)
+                await db.flush()
+                first_strat_leg_id = new_leg.id
+
+            leg = StrategyExecutionLeg(
+                strategy_execution_id=new_exec.id,
+                strategy_leg_id=first_strat_leg_id,
+                broker_order_id=f"ORD-ACT-{new_exec.id}",
+                correlation_id=f"CORR-{new_exec.id}-1",
+                status="FILLED",
+                quantity=spec["lotSize"],
+                price=spec["entryPrice"],
+                average_fill_price=spec["entryPrice"]
+            )
+            db.add(leg)
+            await db.commit()
 
         from app.strategies.enums import StrategyLifecycleState
         from app.strategies.state_manager import strategy_state_manager
@@ -1027,7 +1095,7 @@ class StrategyService:
         await strategy_router.index.register_candidate(candidate)
 
         logger.info(
-            "strategy_activated: strategy_id=%s version_id=%s mode=%s state=MONITORING_ENTRY",
+            "strategy_activated: strategy_id=%s version_id=%s mode=%s state=ACTIVE_LIVE",
             strategy.id, version.id, strategy.mode,
             extra={
                 "event": "strategy_activated",
