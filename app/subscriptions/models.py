@@ -120,6 +120,23 @@ class UserDailyStrategyUsage(Base):
 
     user = relationship("User")
 
+class AdminPaymentMethod(Base):
+    __tablename__ = "admin_payment_methods"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    method_type = Column(String(50), nullable=False) # BANK_ACCOUNT or UPI
+    title = Column(String(100), nullable=False) # e.g. "Primary HDFC Current Account", "Institutional UPI"
+    bank_name = Column(String(100), nullable=True)
+    account_number = Column(String(100), nullable=True)
+    ifsc_code = Column(String(50), nullable=True)
+    account_holder_name = Column(String(100), nullable=True)
+    upi_id = Column(String(100), nullable=True)
+    upi_qr_url = Column(String(500), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    display_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
 class SubscriptionPayment(Base):
     __tablename__ = "subscription_payments"
 
@@ -131,15 +148,22 @@ class SubscriptionPayment(Base):
     gst_amount = Column(Numeric(15, 2), nullable=False, default=0.00)
     total_amount = Column(Numeric(15, 2), nullable=False)
     currency = Column(String(10), nullable=False, default="INR")
-    payment_provider = Column(String(30), nullable=False)
+    payment_provider = Column(String(50), nullable=False, default="MANUAL_UTR")
+    payment_mode = Column(String(50), nullable=False, default="UPI") # UPI, BANK_TRANSFER
+    utr_number = Column(String(255), nullable=True, index=True) # 12-digit UTR
+    user_remarks = Column(String(500), nullable=True)
+    admin_notes = Column(String(500), nullable=True)
+    approved_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     provider_payment_id = Column(String(255), nullable=True, index=True)
     provider_order_id = Column(String(255), nullable=True)
-    status = Column(String(30), nullable=False) # PENDING, SUCCESS, FAILED
+    status = Column(String(30), nullable=False, default="PENDING_APPROVAL") # PENDING_APPROVAL, SUCCESS, REJECTED
     idempotency_key = Column(String(255), unique=True, nullable=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
-    user = relationship("User")
+    user = relationship("User", foreign_keys=[user_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
     subscription = relationship("Subscription")
     plan = relationship("Plan")

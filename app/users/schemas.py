@@ -33,4 +33,17 @@ class ProvisionUserRequest(BaseModel):
     }
 
 class UserStatusUpdateRequest(BaseModel):
-    active: bool
+    active: Optional[bool] = None
+    isActive: Optional[bool] = Field(None, alias="isActive")
+
+    @property
+    def is_active_val(self) -> bool:
+        if self.active is not None:
+            return self.active
+        if self.isActive is not None:
+            return self.isActive
+        return True
+
+    model_config = {
+        "populate_by_name": True
+    }

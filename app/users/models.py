@@ -30,3 +30,5 @@ class User(Base):
     # Relationships
     referred_by = relationship("User", remote_side=[id], backref="referrals")
     wallet = relationship("Wallet", uselist=False, back_populates="user", cascade="all, delete-orphan")
+
+import app.wallets.models # noqa: E402

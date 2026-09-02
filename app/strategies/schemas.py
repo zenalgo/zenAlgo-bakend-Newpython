@@ -404,6 +404,7 @@ class StrategyResponse(BaseModel):
     eventExclusion: Optional[dict] = Field(None, alias="eventExclusion")
     tradingHorizon: Optional[str] = Field("Intraday", alias="tradingHorizon")
     scriptExecutionPayload: Optional[dict] = Field(None, alias="scriptExecutionPayload")
+    latestExecution: Optional[dict] = Field(None, alias="latestExecution")
 
     model_config = {
         "populate_by_name": True,

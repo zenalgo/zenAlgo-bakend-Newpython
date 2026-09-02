@@ -8,19 +8,25 @@ export const traderApi = {
     axiosClient.get('/execution/placed-orders', { params: { strategyId } }),
 
   getMySubscription: () =>
-    axiosClient.get('/user/subscriptions/current'),
+    axiosClient.get('/subscriptions/me'),
 
   getPlans: () =>
-    axiosClient.get('/user/subscriptions/plans'),
+    axiosClient.get('/subscriptions/plans'),
+
+  getActivePaymentMethods: () =>
+    axiosClient.get('/subscriptions/payment-methods/active'),
+
+  requestPlanActivation: (payload) =>
+    axiosClient.post('/subscriptions/request-activation', payload),
 
   getWallet: () =>
-    axiosClient.get('/wallet'),
+    axiosClient.get('/wallets/me'),
 
   getWalletTransactions: () =>
-    axiosClient.get('/wallet/transactions'),
+    axiosClient.get('/wallets/me/transactions'),
 
   depositMargin: (amount) =>
-    axiosClient.post('/wallet/deposit', { amount, remarks: 'Client portal instant margin deposit' }),
+    axiosClient.post('/wallets/me/deposit', { amount, remarks: 'Client portal instant margin deposit' }),
 
   simulateExecution: (strategyId) =>
     axiosClient.post('/execution/simulate', { strategyId }),

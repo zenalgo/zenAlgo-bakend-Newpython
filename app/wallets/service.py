@@ -19,12 +19,20 @@ async def create_wallet(db: AsyncSession, user) -> Wallet:
     return wallet
 
 async def get_wallet_by_user_id(db: AsyncSession, user_id: int) -> Wallet:
-    """Finds a wallet by user ID."""
+    """Finds a wallet by user ID, auto-creating a demo margin wallet if not yet initialized."""
     stmt = select(Wallet).where(Wallet.user_id == user_id)
     res = await db.execute(stmt)
     wallet = res.scalar_one_or_none()
     if not wallet:
-        raise ResourceNotFoundError("Wallet not found for this user")
+        wallet = Wallet(
+            user_id=user_id,
+            balance=Decimal("100000.00"),
+            currency="INR",
+            version=0
+        )
+        db.add(wallet)
+        await db.commit()
+        await db.refresh(wallet)
     return wallet
 
 async def get_transaction_history(

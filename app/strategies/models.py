@@ -231,3 +231,6 @@ class StrategyEventProcessing(Base):
 
     strategy = relationship("Strategy")
 
+import app.users.models # noqa: E402
+import app.execution.models # noqa: E402
+

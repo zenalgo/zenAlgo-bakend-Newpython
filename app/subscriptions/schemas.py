@@ -206,3 +206,106 @@ class QuotaReservation(BaseModel):
         "populate_by_name": True,
         "from_attributes": True
     }
+
+class AdminPaymentMethodRequest(BaseModel):
+    methodType: str = Field(..., alias="methodType") # BANK_ACCOUNT or UPI
+    title: str
+    bankName: Optional[str] = Field(None, alias="bankName")
+    accountNumber: Optional[str] = Field(None, alias="accountNumber")
+    ifscCode: Optional[str] = Field(None, alias="ifscCode")
+    accountHolderName: Optional[str] = Field(None, alias="accountHolderName")
+    upiId: Optional[str] = Field(None, alias="upiId")
+    upiQrUrl: Optional[str] = Field(None, alias="upiQrUrl")
+    isActive: bool = Field(True, alias="isActive")
+    displayOrder: int = Field(0, alias="displayOrder")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class AdminPaymentMethodResponse(BaseModel):
+    id: int
+    method_type: str = Field(..., alias="methodType")
+    title: str
+    bank_name: Optional[str] = Field(None, alias="bankName")
+    account_number: Optional[str] = Field(None, alias="accountNumber")
+    ifsc_code: Optional[str] = Field(None, alias="ifscCode")
+    account_holder_name: Optional[str] = Field(None, alias="accountHolderName")
+    upi_id: Optional[str] = Field(None, alias="upiId")
+    upi_qr_url: Optional[str] = Field(None, alias="upiQrUrl")
+    is_active: bool = Field(..., alias="isActive")
+    display_order: int = Field(..., alias="displayOrder")
+    created_at: datetime = Field(..., alias="createdAt")
+
+    model_config = {
+        "populate_by_name": True,
+        "from_attributes": True
+    }
+
+class PlanPurchaseRequest(BaseModel):
+    planId: int = Field(..., alias="planId")
+    paymentMode: str = Field("UPI", alias="paymentMode") # UPI, BANK_TRANSFER
+    utrNumber: str = Field(..., alias="utrNumber", min_length=6)
+    userRemarks: Optional[str] = Field(None, alias="userRemarks")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class PendingSubscriptionRequestResponse(BaseModel):
+    paymentId: int = Field(..., alias="paymentId")
+    subscriptionId: Optional[int] = Field(None, alias="subscriptionId")
+    userId: int = Field(..., alias="userId")
+    userEmail: str = Field(..., alias="userEmail")
+    userName: str = Field(..., alias="userName")
+    planId: int = Field(..., alias="planId")
+    planCode: str = Field(..., alias="planCode")
+    planName: str = Field(..., alias="planName")
+    amount: Decimal
+    gstAmount: Decimal = Field(..., alias="gstAmount")
+    totalAmount: Decimal = Field(..., alias="totalAmount")
+    paymentMode: str = Field(..., alias="paymentMode")
+    utrNumber: str = Field(..., alias="utrNumber")
+    userRemarks: Optional[str] = Field(None, alias="userRemarks")
+    adminNotes: Optional[str] = Field(None, alias="adminNotes")
+    status: str
+    requestedAt: datetime = Field(..., alias="requestedAt")
+
+    model_config = {
+        "populate_by_name": True,
+        "from_attributes": True
+    }
+
+class SubscriptionApprovalActionRequest(BaseModel):
+    adminNotes: Optional[str] = Field(None, alias="adminNotes")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class PlanWalletLedgerItem(BaseModel):
+    id: int
+    paymentId: int = Field(..., alias="paymentId")
+    userId: int = Field(..., alias="userId")
+    userEmail: str = Field(..., alias="userEmail")
+    userName: str = Field(..., alias="userName")
+    planName: str = Field(..., alias="planName")
+    amount: Decimal
+    utrNumber: str = Field(..., alias="utrNumber")
+    approvedBy: str = Field(..., alias="approvedBy")
+    approvedAt: datetime = Field(..., alias="approvedAt")
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+class AdminPlanWalletLedgerResponse(BaseModel):
+    totalRevenue: Decimal = Field(..., alias="totalRevenue")
+    pendingRevenue: Decimal = Field(..., alias="pendingRevenue")
+    activeSubscribersCount: int = Field(..., alias="activeSubscribersCount")
+    totalTransactionsCount: int = Field(..., alias="totalTransactionsCount")
+    ledger: List[PlanWalletLedgerItem]
+
+    model_config = {
+        "populate_by_name": True
+    }

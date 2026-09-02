@@ -9,7 +9,8 @@ import {
   Wallet,
   Users,
   ShieldCheck,
-  FileCode,
+  Building2,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const Sidebar = ({ currentTab, onSelectTab }) => {
@@ -19,6 +20,8 @@ export const Sidebar = ({ currentTab, onSelectTab }) => {
     { id: 'builder', label: 'Strategy Builder & AI', icon: Cpu },
     { id: 'placed-orders', label: 'Placed Orders & Positions', icon: Package, badge: 'Live' },
     { id: 'batches', label: 'Copy-Trading Auditing', icon: Layers },
+    { id: 'approvals', label: 'Plan UTR Approvals & Wallet', icon: CheckCircle2, badge: 'New' },
+    { id: 'payment-settings', label: 'Bank & UPI Settings', icon: Building2 },
     { id: 'plans', label: 'Subscription Plans', icon: CreditCard },
     { id: 'wallets', label: 'Wallets & Ledger', icon: Wallet },
     { id: 'users', label: 'User Directory', icon: Users },

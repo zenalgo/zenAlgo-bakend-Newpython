@@ -296,11 +296,17 @@ export const UserManagementPage = () => {
             />
           </div>
 
+          <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '10px 14px', borderRadius: '6px', fontSize: '0.8rem', color: 'var(--accent-amber)' }}>
+            ℹ️ <strong>Default Security Policy:</strong> New accounts are created in <strong>DEACTIVE</strong> status. Click "Activate" after provisioning to grant login access.
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <div>
               <label>Account Role</label>
               <select value={role} onChange={(e) => setRole(e.target.value)} className="input-field">
                 <option value="TRADER">TRADER (Subscriber)</option>
+                <option value="USER">USER (Client)</option>
+                <option value="PARTNER">PARTNER (Affiliate/Sub-Broker)</option>
                 <option value="ADMIN">ADMIN</option>
                 <option value="SUPER_ADMIN">SUPER_ADMIN</option>
               </select>

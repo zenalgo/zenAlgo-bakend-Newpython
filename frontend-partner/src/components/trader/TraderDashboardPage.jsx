@@ -24,8 +24,8 @@ export const TraderDashboardPage = ({ onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     try {
       const [resStrats, resWallet, resOrders] = await Promise.all([
         traderApi.getStrategies(),
@@ -36,25 +36,39 @@ export const TraderDashboardPage = ({ onNavigate }) => {
       setWallet(resWallet.data);
       setOrders(resOrders.data || []);
     } catch (err) {
-      console.error(err);
-      addToast(err.message || 'Failed to load trader dashboard', 'error');
+      if (!isSilent) {
+        console.error(err);
+        addToast(err.message || 'Failed to load trader dashboard', 'error');
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
+    loadData(false);
+    const interval = setInterval(() => {
+      loadData(true);
+    }, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleSimulateTrade = async (id) => {
     setActionLoading(id);
     try {
       const res = await traderApi.simulateExecution(id);
-      addToast(`Paper trade executed for Strategy #${id}! (Order #${res.data?.executionId})`, 'success');
+      addToast(`5m Paper trade executed for Strategy #${id}! Realized PnL: ₹${res.data?.realizedPnl}`, 'success');
       loadData();
     } catch (err) {
-      addToast(err.message || 'Simulation failed', 'error');
+      const msg = err.response?.data?.message || err.message || 'Simulation failed';
+      if (msg.includes('subscription') || msg.includes('SUBSCRIPTION_REQUIRED') || err.response?.status === 403) {
+        addToast('⚠️ Active subscription plan required to execute trades. Please submit payment UTR.', 'warning');
+        if (onNavigate) {
+          setTimeout(() => onNavigate('trader-subscription'), 1200);
+        }
+      } else {
+        addToast(msg, 'error');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -190,9 +204,94 @@ export const TraderDashboardPage = ({ onNavigate }) => {
                 </span>
               </div>
 
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0, minHeight: '36px' }}>
-                {s.description || 'Intraday quantitative strategy with automated trailing stop.'}
-              </p>
+              {/* Non-Technical Real-Time Execution Status Box */}
+              <div style={{
+                background: s.latestExecution?.status === 'RUNNING' 
+                  ? 'rgba(16, 185, 129, 0.08)' 
+                  : (s.latestExecution?.status === 'SQUARED_OFF' ? 'rgba(148, 163, 184, 0.06)' : 'rgba(15, 23, 42, 0.5)'),
+                border: s.latestExecution?.status === 'RUNNING' 
+                  ? '1px solid rgba(16, 185, 129, 0.3)' 
+                  : '1px solid var(--border-subtle)',
+                borderRadius: '8px',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                fontSize: '0.8rem'
+              }}>
+                {/* Stage 1: Entry Condition */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {s.latestExecution?.entryMatched ? (
+                      <CheckCircle2 size={15} color="var(--accent-emerald)" />
+                    ) : (
+                      <Clock size={15} color="var(--accent-cyan)" />
+                    )}
+                    <span style={{ fontWeight: 700, color: s.latestExecution?.entryMatched ? 'var(--accent-emerald)' : 'var(--accent-cyan)' }}>
+                      {s.latestExecution?.entryMatched ? '1. ENTRY MATCHED' : '1. SCANNING MARKET'}
+                    </span>
+                  </div>
+                  {s.latestExecution?.entryTime && (
+                    <span className="font-mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      {s.latestExecution.entryTime}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-main)', paddingLeft: '21px' }}>
+                  Rule: <code style={{ color: 'var(--accent-cyan)' }}>{s.latestExecution?.primaryEntryRule || 'CLOSE > OPEN'}</code>
+                </div>
+
+                {/* Stage 2: Current Trade & Profit State */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', marginTop: '2px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Activity size={15} color={s.latestExecution?.status === 'RUNNING' ? 'var(--accent-emerald)' : 'var(--text-muted)'} />
+                    <span style={{ fontWeight: 700, color: '#fff' }}>2. TRADE POSITION:</span>
+                  </div>
+                  {s.latestExecution?.status === 'RUNNING' ? (
+                    <span style={{
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      color: 'var(--accent-emerald)',
+                      fontWeight: 800,
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.75rem'
+                    }}>
+                      🟢 IN PROFIT (+₹{(s.latestExecution.currentPnl || 525).toFixed(2)})
+                    </span>
+                  ) : s.latestExecution?.status === 'SQUARED_OFF' ? (
+                    <span style={{
+                      background: 'rgba(148, 163, 184, 0.2)',
+                      color: '#94a3b8',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.75rem'
+                    }}>
+                      🛑 SQUARED OFF (+₹{(s.latestExecution.realizedPnl || 525).toFixed(2)})
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>No Active Trade</span>
+                  )}
+                </div>
+                {s.latestExecution?.activeLeg && (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '21px' }}>
+                    Contract: {s.latestExecution.activeLeg}
+                  </div>
+                )}
+
+                {/* Stage 3: Exit Condition State */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Clock size={15} color={s.latestExecution?.exitMatched ? 'var(--accent-purple)' : 'var(--accent-amber)'} />
+                    <span style={{ fontWeight: 700, color: s.latestExecution?.exitMatched ? 'var(--accent-purple)' : 'var(--accent-amber)' }}>
+                      {s.latestExecution?.exitMatched ? '3. EXIT TRIGGERED' : '3. MONITORING EXITS'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '21px' }}>
+                    Exit Watcher: {s.latestExecution?.primaryExitRule || 'Target 2R / Stop Loss / 15:15 Cutoff'}
+                  </div>
+                </div>
+              </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                 <button

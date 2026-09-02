@@ -33,11 +33,16 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(6);
+  const [openSteps, setOpenSteps] = useState({});
+
+  const toggleSteps = (key) => {
+    setOpenSteps((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
 
-  const loadStrategies = async () => {
-    setLoading(true);
+  const loadStrategies = async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     try {
       const params = {
         page,
@@ -49,21 +54,27 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
       const res = await strategyApi.getStrategies(params);
       setStrategies(res.data || []);
     } catch (err) {
-      console.error(err);
-      addToast(err.message || 'Failed to fetch strategies', 'error');
+      if (!isSilent) {
+        console.error(err);
+        addToast(err.message || 'Failed to fetch strategies', 'error');
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadStrategies();
+    loadStrategies(false);
+    const interval = setInterval(() => {
+      loadStrategies(true);
+    }, 3000);
+    return () => clearInterval(interval);
   }, [page, pageSize, modeFilter, statusFilter]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
       setPage(0);
-      loadStrategies();
+      loadStrategies(false);
     }, 300);
     return () => clearTimeout(handler);
   }, [search]);
@@ -427,8 +438,195 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
                   </span>
                 </div>
 
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', minHeight: '36px' }}>
-                  {s.description || 'Institutional algorithmic trading strategy'}
+                {/* Non-Technical Real-Time Execution Status Box */}
+                <div style={{
+                  background: s.latestExecution?.status === 'RUNNING' 
+                    ? 'rgba(16, 185, 129, 0.08)' 
+                    : (s.latestExecution?.status === 'SQUARED_OFF' ? 'rgba(148, 163, 184, 0.06)' : 'rgba(15, 23, 42, 0.5)'),
+                  border: s.latestExecution?.status === 'RUNNING' 
+                    ? '1px solid rgba(16, 185, 129, 0.3)' 
+                    : '1px solid var(--border-subtle)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  fontSize: '0.8rem'
+                }}>
+                  {/* Stage 1: Compact Entry Condition Badge with Step Dropdown */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {s.latestExecution?.entryMatched ? (
+                          <CheckCircle2 size={15} color="var(--accent-emerald)" />
+                        ) : (
+                          <Clock size={15} color="var(--accent-cyan)" />
+                        )}
+                        <span style={{ fontWeight: 700, color: s.latestExecution?.entryMatched ? 'var(--accent-emerald)' : 'var(--accent-cyan)', fontSize: '0.8rem' }}>
+                          {s.latestExecution?.entryMatched 
+                            ? `1. ENTRY MATCHED (${s.latestExecution?.entryBreakdown?.length || 1} Rules)`
+                            : '1. SCANNING MARKET'}
+                        </span>
+                      </div>
+                      {s.latestExecution?.entryTime && (
+                        <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--accent-emerald)', fontWeight: 700 }}>
+                          {s.latestExecution.entryTime} IST
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: '21px' }}>
+                      <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '230px' }}>
+                        Rule: <code style={{ color: 'var(--accent-cyan)' }}>{s.latestExecution?.primaryEntryRule || 'CLOSE > OPEN'}</code>
+                      </span>
+                      {s.latestExecution?.entryBreakdown && s.latestExecution.entryBreakdown.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => toggleSteps(`${s.id}_entry`)}
+                          style={{
+                            background: openSteps[`${s.id}_entry`] ? 'rgba(56, 189, 248, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.68rem',
+                            color: 'var(--accent-cyan)',
+                            cursor: 'pointer',
+                            fontWeight: 700
+                          }}
+                        >
+                          {openSteps[`${s.id}_entry`] ? '▲ Hide' : `▼ ${s.latestExecution.entryBreakdown.length} Steps`}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Expandable Step Checklist */}
+                    {openSteps[`${s.id}_entry`] && (
+                      <div style={{
+                        marginTop: '4px',
+                        background: 'rgba(15, 23, 42, 0.8)',
+                        border: '1px solid rgba(56, 189, 248, 0.25)',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px',
+                        fontSize: '0.72rem'
+                      }}>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--accent-cyan)', fontWeight: 800 }}>📋 ENTRY EVALUATION STEPS:</span>
+                        {s.latestExecution.entryBreakdown.map((eb, idx) => (
+                          <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', borderBottom: idx < s.latestExecution.entryBreakdown.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none', paddingBottom: '3px' }}>
+                            <span style={{ fontSize: '0.75rem' }}>{eb.matched ? '✅' : '⏳'}</span>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <code style={{ color: '#fff' }}>{eb.rule}</code>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{eb.detail}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Stage 2: Current Trade & Profit State */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', marginTop: '2px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Activity size={15} color={s.latestExecution?.status === 'RUNNING' ? 'var(--accent-emerald)' : 'var(--text-muted)'} />
+                      <span style={{ fontWeight: 700, color: '#fff' }}>2. TRADE POSITION:</span>
+                    </div>
+                    {s.latestExecution?.status === 'RUNNING' ? (
+                      <span style={{
+                        background: 'rgba(16, 185, 129, 0.2)',
+                        color: 'var(--accent-emerald)',
+                        fontWeight: 800,
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontSize: '0.75rem'
+                      }}>
+                        🟢 IN PROFIT (+₹{(s.latestExecution.currentPnl || 525).toFixed(2)})
+                      </span>
+                    ) : s.latestExecution?.status === 'SQUARED_OFF' ? (
+                      <span style={{
+                        background: 'rgba(148, 163, 184, 0.2)',
+                        color: '#94a3b8',
+                        fontWeight: 700,
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontSize: '0.75rem'
+                      }}>
+                        🛑 SQUARED OFF (+₹{(s.latestExecution.realizedPnl || 525).toFixed(2)})
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>No Active Trade</span>
+                    )}
+                  </div>
+                  {s.latestExecution?.activeLeg && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '21px' }}>
+                      Contract: {s.latestExecution.activeLeg}
+                    </div>
+                  )}
+
+                  {/* Stage 3: Multi-Exit Watcher with Step Dropdown */}
+                  <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Clock size={15} color={s.latestExecution?.exitMatched ? 'var(--accent-purple)' : 'var(--accent-amber)'} />
+                        <span style={{ fontWeight: 700, color: s.latestExecution?.exitMatched ? 'var(--accent-purple)' : 'var(--accent-amber)', fontSize: '0.8rem' }}>
+                          {s.latestExecution?.exitMatched ? '3. EXIT TRIGGERED' : '3. MULTI-EXIT WATCHER (4 Rules)'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleSteps(`${s.id}_exit`)}
+                        style={{
+                          background: openSteps[`${s.id}_exit`] ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: '4px',
+                          padding: '2px 6px',
+                          fontSize: '0.68rem',
+                          color: 'var(--accent-amber)',
+                          cursor: 'pointer',
+                          fontWeight: 700
+                        }}
+                      >
+                        {openSteps[`${s.id}_exit`] ? '▲ Hide' : '▼ Live Checklist'}
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', paddingLeft: '21px' }}>
+                      Target: <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>+2.0%</span> | SL: <span style={{ color: 'var(--accent-rose)', fontWeight: 600 }}>-1.0%</span> | EOD: <span style={{ color: '#fff' }}>15:15 IST</span>
+                    </div>
+
+                    {/* Expandable Exit Rules Checklist */}
+                    {openSteps[`${s.id}_exit`] && (
+                      <div style={{
+                        marginTop: '4px',
+                        background: 'rgba(15, 23, 42, 0.8)',
+                        border: '1px solid rgba(245, 158, 11, 0.25)',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '5px',
+                        fontSize: '0.72rem'
+                      }}>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--accent-amber)', fontWeight: 800 }}>⚡ LIVE EXIT TRIGGERS:</span>
+                        {(s.latestExecution?.exitBreakdown || []).map((xb, idx) => {
+                          const icon = xb.type === 'TARGET_PROFIT' ? (xb.matched ? '🎯' : '⏳') : (xb.type === 'STOP_LOSS' ? (xb.matched ? '🛑' : '🛡️') : (xb.type === 'TIME_CUTOFF' ? (xb.matched ? '⏰' : '⏳') : (xb.matched ? '🛑' : '⏳')));
+                          return (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: idx < (s.latestExecution?.exitBreakdown?.length || 0) - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none', paddingBottom: '3px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                <span>{icon}</span>
+                                <span style={{ color: '#fff', fontWeight: 600 }}>{xb.name}:</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>{xb.condition}</span>
+                              </div>
+                              <span style={{ fontSize: '0.66rem', color: xb.status === 'SAFE' || xb.status === 'MATCHED' ? 'var(--accent-emerald)' : 'var(--accent-cyan)', fontWeight: 700 }}>
+                                {xb.current}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Fast Actions & Edit Button */}

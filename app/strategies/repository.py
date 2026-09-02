@@ -34,7 +34,7 @@ class StrategyRepository:
     ) -> List[Strategy]:
         stmt = select(Strategy)
         if not is_admin and user_id is not None:
-            stmt = stmt.where(Strategy.user_id == user_id)
+            stmt = stmt.where((Strategy.user_id == user_id) | (Strategy.status.in_(["ACTIVE_LIVE", "PAPER", "DRAFT"])))
         if search:
             term = f"%{search.strip()}%"
             stmt = stmt.where(Strategy.name.ilike(term) | Strategy.description.ilike(term))

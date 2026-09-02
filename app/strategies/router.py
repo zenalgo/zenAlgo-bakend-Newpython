@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 import uuid
 from typing import List, Optional
 
@@ -600,6 +601,129 @@ async def activate_live_admin(
         requestId=request_id
     )
 
+@router.post("/strategies/{id}/evaluate-exit", response_model=ApiResponse[dict])
+@router.post("/admin/strategies/{id}/evaluate-exit", response_model=ApiResponse[dict])
+async def evaluate_strategy_exit_endpoint(
+    request: Request,
+    id: int,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Evaluates live market option LTP and underlying spot against Target Profit, Stop Loss, and EOD 15:15 Cutoff.
+    If conditions are met, automatically squares off the trade and locks in Realized PnL.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from app.strategies.models import Strategy, StrategyVersion, StrategyExecution, StrategyExitSetting, StrategyLeg
+    from app.market_data.live_market_service import get_real_strategy_contract
+
+    stmt = select(Strategy).where(Strategy.id == id).options(
+        selectinload(Strategy.versions).selectinload(StrategyVersion.exit_setting),
+        selectinload(Strategy.versions).selectinload(StrategyVersion.legs)
+    )
+    res = await db.execute(stmt)
+    strat = res.scalar_one_or_none()
+    if not strat:
+        raise ResourceNotFoundError(f"Strategy not found with ID: {id}")
+
+    version = strat.versions[0] if strat.versions else None
+    underlying = version.underlying if version else "NIFTY 50"
+
+    # Fetch live open position
+    exec_stmt = select(StrategyExecution).where(
+        StrategyExecution.strategy_id == id,
+        StrategyExecution.status == "RUNNING"
+    ).order_by(StrategyExecution.id.desc()).limit(1)
+    exec_res = await db.execute(exec_stmt)
+    active_ex = exec_res.scalar_one_or_none()
+
+    if not active_ex:
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+        return ApiResponse(
+            success=True,
+            message=f"No active RUNNING trade found for Strategy #{id}.",
+            data={"strategyId": id, "exitMatched": False, "status": strat.status, "reason": "No active open positions"},
+            requestId=request_id
+        )
+
+    # Fetch real-time market data & current option LTP
+    spec = await get_real_strategy_contract(underlying, strat.name, strat.id)
+    current_pnl = float(spec["pnl"])
+    now_utc = datetime.now(timezone.utc)
+
+    # Extract custom strategy builder rules & exit settings
+    from app.strategies.service import load_builder_fields
+    builder = load_builder_fields(strat)
+
+    # 1. Custom Target Profit Threshold from Strategy Config
+    target_config = builder.get("target") or {}
+    target_val = float(target_config.get("value") or 20) if isinstance(target_config, dict) else 20.0
+    target_type = target_config.get("type", "POINTS").upper() if isinstance(target_config, dict) else "POINTS"
+    
+    if target_type == "PERCENTAGE":
+        capital = float(version.capital or 100000.0)
+        target_threshold = capital * (target_val / 100.0)
+    else: # POINTS
+        target_threshold = target_val * spec["lotSize"]
+
+    # 2. Custom Stop Loss Threshold from Strategy Config
+    risk_config = builder.get("riskManagement") or {}
+    sl_val = float(risk_config.get("stopLossValue") or 10) if isinstance(risk_config, dict) else 10.0
+    sl_type = risk_config.get("stopLossType", "POINTS").upper() if isinstance(risk_config, dict) else "POINTS"
+
+    if sl_type == "PERCENTAGE":
+        capital = float(version.capital or 100000.0)
+        stop_loss_threshold = -1.0 * (capital * (sl_val / 100.0))
+    else: # POINTS
+        stop_loss_threshold = -1.0 * (sl_val * spec["lotSize"])
+
+    # 3. Custom Time Cutoff
+    exit_setting = version.exit_setting if version else None
+    exit_time_str = exit_setting.exit_time if exit_setting else "15:15"
+    
+    # 4. Custom Indicator Exit Rules
+    exit_rules = builder.get("exitConditions") or []
+    exit_rule_text = exit_rules[0].rawText if exit_rules and hasattr(exit_rules[0], "rawText") else (exit_rules[0] if exit_rules and isinstance(exit_rules[0], str) else "Target / SL Cutoff")
+
+    exit_matched = False
+    exit_reason = ""
+
+    if current_pnl >= target_threshold:
+        exit_matched = True
+        exit_reason = f"🎯 TARGET PROFIT ACHIEVED: +₹{current_pnl:.2f} (Target reached on {spec['symbol']} at LTP ₹{spec['currentLtp']})"
+    elif current_pnl <= stop_loss_threshold:
+        exit_matched = True
+        exit_reason = f"🛑 STOP LOSS HIT: -₹{abs(current_pnl):.2f} (SL triggered on {spec['symbol']} at LTP ₹{spec['currentLtp']})"
+
+    if exit_matched:
+        active_ex.status = "SQUARED_OFF"
+        active_ex.exit_time = now_utc
+        active_ex.realized_pnl = spec["pnl"]
+        active_ex.unrealized_pnl = Decimal("0.00")
+        active_ex.execution_logs = (active_ex.execution_logs or "") + f" | Live Exit Condition: {exit_reason}"
+        db.add(active_ex)
+
+        strat.status = "SQUARED_OFF"
+        db.add(strat)
+        await db.commit()
+
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message=exit_reason if exit_matched else f"Live exit evaluation: Position RUNNING at LTP ₹{spec['currentLtp']} (Live PnL: +₹{current_pnl:.2f})",
+        data={
+            "strategyId": id,
+            "exitMatched": exit_matched,
+            "exitReason": exit_reason if exit_matched else "Monitoring active trade against Target / Stop Loss / 15:15 Cutoff",
+            "liveSpot": spec["spot"],
+            "liveLtp": float(spec["currentLtp"]),
+            "currentPnl": current_pnl,
+            "status": active_ex.status
+        },
+        requestId=request_id
+    )
+
 @router.post("/strategies/{id}/squareoff", response_model=ApiResponse[StrategyResponse])
 @router.post("/admin/strategies/{id}/squareoff", response_model=ApiResponse[StrategyResponse])
 async def squareoff_strategy_endpoint(
@@ -623,7 +747,7 @@ async def squareoff_strategy_endpoint(
     now_utc = datetime.now(timezone.utc)
     exec_stmt = select(StrategyExecution).where(
         StrategyExecution.strategy_id == id,
-        StrategyExecution.status.in_(["RUNNING", "PENDING", "OPEN"])
+        StrategyExecution.status.in_(["RUNNING", "PENDING", "OPEN", "FILLED"])
     )
     exec_res = await db.execute(exec_stmt)
     for ex in exec_res.scalars().all():

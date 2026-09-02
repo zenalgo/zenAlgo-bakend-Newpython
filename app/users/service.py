@@ -47,14 +47,15 @@ async def provision_user(db: AsyncSession, request: ProvisionUserRequest, execut
         email=request.email,
         password_hash=hash_password(request.password),
         role=target_role,
-        is_active=True, # Provisioned users are active by default
+        is_active=False, # Provisioned users are inactive by default until activated
         referral_code=referral_code,
         referred_by_id=executor.id, # The executor becomes the referrer
         first_name=request.firstName,
         last_name=request.lastName
     )
     db.add(newUser)
-    await db.flush()
+    await db.commit()
+    await db.refresh(newUser)
     
     # Initialize wallet
     await create_wallet(db, newUser)
@@ -70,16 +71,12 @@ async def get_all_users(
 ) -> List[UserDto]:
     """Retrieves all registered users mapped to UserDto with pagination and filtering."""
     stmt = select(User)
+    
     if search:
         term = f"%{search.strip()}%"
-        stmt = stmt.where(
-            User.email.ilike(term) |
-            User.first_name.ilike(term) |
-            User.last_name.ilike(term) |
-            User.referral_code.ilike(term)
-        )
+        stmt = stmt.where(User.email.ilike(term) | User.first_name.ilike(term) | User.last_name.ilike(term))
     if role:
-        stmt = stmt.where(User.role == role.upper())
+        stmt = stmt.where(User.role == role)
     if is_active is not None:
         stmt = stmt.where(User.is_active == is_active)
 
@@ -116,7 +113,8 @@ async def update_user_status(db: AsyncSession, target_user_id: int, request: Use
     elif executor_role != UserRole.SUPER_ADMIN:
         raise AuthorizationError("You do not have permissions to modify user active states.")
 
-    target.is_active = request.active
+    target.is_active = request.is_active_val
     db.add(target)
-    await db.flush()
+    await db.commit()
+    await db.refresh(target)
     return target

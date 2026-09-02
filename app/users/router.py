@@ -58,7 +58,7 @@ async def update_status(
 ):
     user = await service.update_user_status(db, userId, body, current_admin.email)
     user_dto = UserDto.model_validate(user)
-    action = "activated" if body.active else "deactivated"
+    action = "activated" if body.is_active_val else "deactivated"
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,

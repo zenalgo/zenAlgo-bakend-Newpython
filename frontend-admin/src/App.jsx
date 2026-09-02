@@ -9,6 +9,8 @@ import { StrategyBuilderPage } from './components/strategy/StrategyBuilderPage';
 import { PlacedOrdersPage } from './components/execution/PlacedOrdersPage';
 import { BatchAuditingPage } from './components/execution/BatchAuditingPage';
 import { SubscriptionPlansPage } from './components/plans/SubscriptionPlansPage';
+import { SubscriptionApprovalsPage } from './components/subscriptions/SubscriptionApprovalsPage';
+import { PaymentSettingsPage } from './components/payments/PaymentSettingsPage';
 import { WalletPage } from './components/wallets/WalletPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
 import { BrokerSettingsPage } from './components/brokers/BrokerSettingsPage';
@@ -58,6 +60,10 @@ export const App = () => {
         return <PlacedOrdersPage selectedStrategyId={selectedStrategyId} />;
       case 'batches':
         return <BatchAuditingPage selectedStrategyId={selectedStrategyId} />;
+      case 'approvals':
+        return <SubscriptionApprovalsPage />;
+      case 'payment-settings':
+        return <PaymentSettingsPage />;
       case 'plans':
         return <SubscriptionPlansPage />;
       case 'wallets':

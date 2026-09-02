@@ -19,9 +19,15 @@ def get_role_permissions(role: str) -> List[str]:
             "PORTFOLIO_READ"
         ]
     elif role == UserRole.TRADER:
-        return ["ACCOUNT_READ", "TRADE_READ", "TRADE_EXECUTE"]
+        return [
+            "ACCOUNT_READ", "ACCOUNT_WRITE", "TRADE_READ", "TRADE_EXECUTE",
+            "WALLET_READ", "WALLET_WRITE", "PORTFOLIO_READ"
+        ]
     elif role in [UserRole.USER, UserRole.PARTNER]:
-        return ["ACCOUNT_READ", "PORTFOLIO_READ", "TRADE_READ"]
+        return [
+            "ACCOUNT_READ", "ACCOUNT_WRITE", "PORTFOLIO_READ", "TRADE_READ",
+            "TRADE_EXECUTE", "WALLET_READ", "WALLET_WRITE"
+        ]
     return []
 
 async def generate_unique_referral_code(db: AsyncSession) -> str:
@@ -80,7 +86,7 @@ async def login_user(db: AsyncSession, request: LoginRequest) -> AuthResponse:
         raise ResourceNotFoundError("User not found")
         
     if not user.is_active:
-        raise AuthenticationError("User is deactivated", code="DEACTIVATED")
+        raise AuthenticationError("Account is inactive. Pending administrator activation.", code="DEACTIVATED")
 
     if not verify_password(user.password_hash, request.password):
         raise AuthenticationError("Invalid password", code="BAD_CREDENTIALS")
