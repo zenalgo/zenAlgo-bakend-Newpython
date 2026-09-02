@@ -15,29 +15,58 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+
     # User orders updates
-    op.add_column('user_orders', sa.Column('requested_quantity', sa.Integer(), nullable=True))
-    op.add_column('user_orders', sa.Column('filled_quantity', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('user_orders', sa.Column('remaining_quantity', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('user_orders', sa.Column('requested_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
-    op.add_column('user_orders', sa.Column('average_fill_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
-    op.add_column('user_orders', sa.Column('reconciliation_attempts', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('user_orders', sa.Column('last_reconciled_at', sa.DateTime(timezone=True), nullable=True))
-    op.add_column('user_orders', sa.Column('square_off_order_id', sa.String(length=100), nullable=True))
-    op.create_unique_constraint('uk_user_orders_correlation_id', 'user_orders', ['correlation_id'])
+    uo_cols = [c['name'] for c in inspector.get_columns('user_orders')]
+    if 'requested_quantity' not in uo_cols:
+        op.add_column('user_orders', sa.Column('requested_quantity', sa.Integer(), nullable=True))
+    if 'filled_quantity' not in uo_cols:
+        op.add_column('user_orders', sa.Column('filled_quantity', sa.Integer(), server_default='0', nullable=True))
+    if 'remaining_quantity' not in uo_cols:
+        op.add_column('user_orders', sa.Column('remaining_quantity', sa.Integer(), server_default='0', nullable=True))
+    if 'requested_price' not in uo_cols:
+        op.add_column('user_orders', sa.Column('requested_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
+    if 'average_fill_price' not in uo_cols:
+        op.add_column('user_orders', sa.Column('average_fill_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
+    if 'reconciliation_attempts' not in uo_cols:
+        op.add_column('user_orders', sa.Column('reconciliation_attempts', sa.Integer(), server_default='0', nullable=True))
+    if 'last_reconciled_at' not in uo_cols:
+        op.add_column('user_orders', sa.Column('last_reconciled_at', sa.DateTime(timezone=True), nullable=True))
+    if 'square_off_order_id' not in uo_cols:
+        op.add_column('user_orders', sa.Column('square_off_order_id', sa.String(length=100), nullable=True))
+    
+    uo_constraints = [c['name'] for c in inspector.get_unique_constraints('user_orders')]
+    if 'uk_user_orders_correlation_id' not in uo_constraints:
+        op.create_unique_constraint('uk_user_orders_correlation_id', 'user_orders', ['correlation_id'])
 
     # Strategy execution legs updates
-    op.add_column('strategy_execution_legs', sa.Column('correlation_id', sa.String(length=100), nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('requested_quantity', sa.Integer(), nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('filled_quantity', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('remaining_quantity', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('requested_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('average_fill_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('rejection_reason', sa.Text(), nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('reconciliation_attempts', sa.Integer(), server_default='0', nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('last_reconciled_at', sa.DateTime(timezone=True), nullable=True))
-    op.add_column('strategy_execution_legs', sa.Column('square_off_order_id', sa.String(length=100), nullable=True))
-    op.create_unique_constraint('uk_strategy_execution_legs_correlation_id', 'strategy_execution_legs', ['correlation_id'])
+    sel_cols = [c['name'] for c in inspector.get_columns('strategy_execution_legs')]
+    if 'correlation_id' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('correlation_id', sa.String(length=100), nullable=True))
+    if 'requested_quantity' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('requested_quantity', sa.Integer(), nullable=True))
+    if 'filled_quantity' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('filled_quantity', sa.Integer(), server_default='0', nullable=True))
+    if 'remaining_quantity' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('remaining_quantity', sa.Integer(), server_default='0', nullable=True))
+    if 'requested_price' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('requested_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
+    if 'average_fill_price' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('average_fill_price', sa.Numeric(precision=15, scale=2), server_default='0.00', nullable=True))
+    if 'rejection_reason' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('rejection_reason', sa.Text(), nullable=True))
+    if 'reconciliation_attempts' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('reconciliation_attempts', sa.Integer(), server_default='0', nullable=True))
+    if 'last_reconciled_at' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('last_reconciled_at', sa.DateTime(timezone=True), nullable=True))
+    if 'square_off_order_id' not in sel_cols:
+        op.add_column('strategy_execution_legs', sa.Column('square_off_order_id', sa.String(length=100), nullable=True))
+
+    sel_constraints = [c['name'] for c in inspector.get_unique_constraints('strategy_execution_legs')]
+    if 'uk_strategy_execution_legs_correlation_id' not in sel_constraints:
+        op.create_unique_constraint('uk_strategy_execution_legs_correlation_id', 'strategy_execution_legs', ['correlation_id'])
 
 def downgrade() -> None:
     op.drop_constraint('uk_strategy_execution_legs_correlation_id', 'strategy_execution_legs', type_='unique')
