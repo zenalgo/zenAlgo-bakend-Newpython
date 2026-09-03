@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, Plus, ArrowUpRight, ArrowDownLeft, RefreshCw, DollarSign, Shield } from 'lucide-react';
 import { traderApi } from '../../api/traderApi';
+import { brokerApi } from '../../api/brokerApi';
 import { Modal } from '../common/Modal';
 import { useToast } from '../../context/ToastContext';
 
 export const TraderWalletPage = () => {
   const { addToast } = useToast();
   const [wallet, setWallet] = useState(null);
+  const [dhanFunds, setDhanFunds] = useState(null);
+  const [brokerSession, setBrokerSession] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -16,12 +19,28 @@ export const TraderWalletPage = () => {
   const loadWallet = async () => {
     setLoading(true);
     try {
-      const [resWallet, resTx] = await Promise.all([
-        traderApi.getWallet(),
-        traderApi.getWalletTransactions(),
+      const [resWallet, resTx, resBroker] = await Promise.all([
+        traderApi.getWallet().catch(() => ({ data: null })),
+        traderApi.getWalletTransactions().catch(() => ({ data: [] })),
+        brokerApi.getActiveSession().catch(() => ({ data: { connected: false } })),
       ]);
-      setWallet(resWallet.data);
+      setWallet(resWallet.data || null);
       setTransactions(resTx.data || []);
+      const activeBroker = resBroker?.data || null;
+      setBrokerSession(activeBroker);
+
+      if (activeBroker?.connected) {
+        try {
+          const fundsRes = await brokerApi.getDhanFunds();
+          if (fundsRes?.data) {
+            setDhanFunds(fundsRes.data);
+          }
+        } catch (brokerErr) {
+          console.warn('Could not load Dhan funds for wallet page', brokerErr);
+        }
+      } else {
+        setDhanFunds(null);
+      }
     } catch (err) {
       console.error(err);
       addToast(err.message || 'Failed to load wallet data', 'error');
@@ -58,7 +77,7 @@ export const TraderWalletPage = () => {
         <div>
           <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Trading Wallet & Margin</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            Manage available trading capital, margin allocations, and deposits.
+            Manage available trading capital, broker margin limits, and deposits.
           </p>
         </div>
 
@@ -72,22 +91,66 @@ export const TraderWalletPage = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
         <div className="glass-panel" style={{ padding: '24px', borderLeft: '4px solid var(--accent-emerald)' }}>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>AVAILABLE TRADING MARGIN</div>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--accent-emerald)', marginTop: '6px' }}>
-            ₹{Number(wallet?.availableMargin || 95000).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px' }}>
-            Locked in Active Positions: ₹{Number(wallet?.lockedMargin || 5000).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-          </div>
+          {dhanFunds ? (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--accent-emerald)', marginTop: '6px' }}>
+                ₹{Number(dhanFunds.availableBalance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)', marginTop: '6px' }}>
+                ● Live Dhan Margin Balance (Utilized: ₹{Number(dhanFunds.utilizedAmount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })})
+              </div>
+            </>
+          ) : wallet && wallet.availableMargin != null ? (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--accent-emerald)', marginTop: '6px' }}>
+                ₹{Number(wallet.availableMargin).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                Locked in Active Positions: ₹{Number(wallet.lockedMargin || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--text-dim)', marginTop: '6px' }}>
+                N/A
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>
+                No active margin data found
+              </div>
+            </>
+          )}
         </div>
 
         <div className="glass-panel" style={{ padding: '24px', borderLeft: '4px solid var(--accent-cyan)' }}>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>TOTAL WALLET BALANCE</div>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: '6px' }}>
-            ₹{Number(wallet?.totalBalance || 100000).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', marginTop: '6px' }}>
-            ● 100% Margin Backed Instant Execution
-          </div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>START OF DAY (SOD) / TOTAL LIMIT</div>
+          {dhanFunds ? (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: '6px' }}>
+                ₹{Number(dhanFunds.sodLimit || dhanFunds.availableBalance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', marginTop: '6px' }}>
+                ● Withdrawable: ₹{Number(dhanFunds.withdrawableBalance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+            </>
+          ) : wallet && wallet.totalBalance != null ? (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: '6px' }}>
+                ₹{Number(wallet.totalBalance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', marginTop: '6px' }}>
+                ● Platform Margin Pool
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--text-dim)', marginTop: '6px' }}>
+                N/A
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '6px' }}>
+                Connect broker to fetch limit
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -113,29 +176,37 @@ export const TraderWalletPage = () => {
               </tr>
             </thead>
             <tbody>
-              {transactions.length === 0 ? (
+              {loading ? (
                 <tr>
                   <td colSpan="5" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-                    No transactions recorded. Click "Add Margin / Deposit" to test!
+                    Loading transactions...
+                  </td>
+                </tr>
+              ) : transactions.length === 0 ? (
+                <tr>
+                  <td colSpan="5" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                    No recorded wallet transactions found.
                   </td>
                 </tr>
               ) : (
                 transactions.map((tx) => (
                   <tr key={tx.id}>
-                    <td className="font-mono" style={{ color: 'var(--accent-cyan)' }}>{tx.referenceId}</td>
+                    <td className="font-mono" style={{ color: 'var(--accent-cyan)' }}>
+                      #{tx.referenceId || tx.id}
+                    </td>
                     <td>
-                      <span className={`badge ${tx.type === 'DEPOSIT' ? 'badge-active' : 'badge-pending'}`}>
+                      <span className={`badge ${tx.type === 'DEPOSIT' ? 'badge-active' : 'badge-inactive'}`}>
                         {tx.type}
                       </span>
                     </td>
-                    <td>
-                      <strong style={{ color: tx.type === 'DEPOSIT' ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
-                        {tx.type === 'DEPOSIT' ? '+' : '-'}₹{Number(tx.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </strong>
+                    <td style={{ fontWeight: 700, color: tx.type === 'DEPOSIT' ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
+                      {tx.type === 'DEPOSIT' ? '+' : '-'}₹{Number(tx.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </td>
-                    <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{tx.remarks}</td>
-                    <td style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-                      {new Date(tx.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
+                    <td style={{ color: 'var(--text-muted)' }}>
+                      {tx.remarks || 'Standard transfer'}
+                    </td>
+                    <td className="font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+                      {tx.createdAt ? new Date(tx.createdAt).toLocaleString('en-IN') : 'N/A'}
                     </td>
                   </tr>
                 ))
@@ -146,44 +217,55 @@ export const TraderWalletPage = () => {
       </div>
 
       {/* Deposit Modal */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="💳 Add Margin / Deposit Funds">
-        <form onSubmit={handleDeposit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div>
-            <label>Deposit Amount (₹)</label>
-            <input
-              type="number"
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(e.target.value)}
-              className="input-field font-mono"
-              placeholder="e.g. 50000"
-              required
-            />
-          </div>
+      {isModalOpen && (
+        <Modal title="Deposit Trading Margin" onClose={() => setIsModalOpen(false)}>
+          <form onSubmit={handleDeposit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            <div>
+              <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', display: 'block' }}>
+                Select Instant Amount (₹)
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '12px' }}>
+                {['10000', '25000', '50000', '100000'].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setDepositAmount(val)}
+                    className={`btn ${depositAmount === val ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ padding: '8px 0', justifyContent: 'center' }}
+                  >
+                    ₹{Number(val).toLocaleString('en-IN')}
+                  </button>
+                ))}
+              </div>
 
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {['10000', '25000', '50000', '100000'].map((val) => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => setDepositAmount(val)}
-                className="btn btn-secondary"
-                style={{ flex: 1, padding: '6px', fontSize: '0.75rem' }}
-              >
-                +₹{Number(val).toLocaleString('en-IN')}
+              <input
+                type="number"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value)}
+                placeholder="Enter custom deposit amount"
+                className="input-field font-mono"
+                min="1000"
+                step="1000"
+                required
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ background: 'rgba(56, 189, 248, 0.08)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(56, 189, 248, 0.2)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Deposit funds directly into your instant margin allocation ledger. Instant activation.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '10px' }}>
+              <button type="button" onClick={() => setIsModalOpen(false)} className="btn btn-secondary">
+                Cancel
               </button>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
-            <button type="button" onClick={() => setIsModalOpen(false)} className="btn btn-secondary">
-              Cancel
-            </button>
-            <button type="submit" disabled={depositing} className="btn btn-emerald" style={{ padding: '10px 24px' }}>
-              {depositing ? 'Processing...' : 'Confirm Deposit'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+              <button type="submit" disabled={depositing} className="btn btn-emerald">
+                {depositing ? 'Processing...' : `Confirm Deposit of ₹${Number(depositAmount || 0).toLocaleString('en-IN')}`}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 };

@@ -36,8 +36,8 @@ export const traderApi = {
 
   // Broker APIs
   getBrokerStatus: () =>
-    axiosClient.get('/brokers/status'),
+    axiosClient.get('/brokers/active-session'),
 
   generateDhanConsent: (partnerId, partnerSecret) =>
-    axiosClient.post('/brokers/dhan/auth/partner/generate-consent', { partnerId, partnerSecret }),
+    axiosClient.post('/dhan/auth/partner/generate-consent', { partnerId, partnerSecret }),
 };

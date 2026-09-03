@@ -6,6 +6,7 @@ from decimal import Decimal
 class OrderRequest(BaseModel):
     trading_symbol: str
     security_id: Optional[str] = None
+    exchange_segment: Optional[str] = "NSE_EQ"
     transaction_type: str  # BUY, SELL
     order_type: str = "MARKET"  # MARKET, LIMIT, SL, SL-M
     product_type: str = "MIS"  # MIS, CNC, NRML
@@ -13,6 +14,7 @@ class OrderRequest(BaseModel):
     price: Decimal = Decimal("0.0")
     trigger_price: Decimal = Decimal("0.0")
     validity: str = "DAY"
+    correlation_id: Optional[str] = None
 
 class OrderResult(BaseModel):
     broker_order_id: str

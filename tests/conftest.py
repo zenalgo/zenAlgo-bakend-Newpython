@@ -43,7 +43,7 @@ def event_loop():
     yield loop
     loop.close()
 
-@pytest.fixture(autouse=True, scope="function")
+@pytest.fixture(autouse=False, scope="function")
 async def clean_db():
     """Ensures tables exist and cleans up database tables in topological order before each test run."""
     async with test_engine.begin() as conn:

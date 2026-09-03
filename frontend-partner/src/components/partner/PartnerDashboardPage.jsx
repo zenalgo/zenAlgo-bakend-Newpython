@@ -12,21 +12,34 @@ import {
   Sparkles,
   ShieldCheck,
   Award,
+  Link2,
 } from 'lucide-react';
 import { partnerApi } from '../../api/partnerApi';
+import { brokerApi } from '../../api/brokerApi';
 import { useToast } from '../../context/ToastContext';
 
 export const PartnerDashboardPage = ({ onNavigate }) => {
   const { addToast } = useToast();
   const [stats, setStats] = useState(null);
+  const [brokerSession, setBrokerSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
   const loadStats = async () => {
     setLoading(true);
     try {
-      const res = await partnerApi.getDashboardStats();
-      setStats(res.data);
+      const [resStats, resBroker] = await Promise.allSettled([
+        partnerApi.getDashboardStats(),
+        brokerApi.getActiveSession(),
+      ]);
+      if (resStats.status === 'fulfilled') {
+        setStats(resStats.value.data);
+      }
+      if (resBroker.status === 'fulfilled' && resBroker.value?.data?.connected) {
+        setBrokerSession(resBroker.value.data);
+      } else {
+        setBrokerSession(null);
+      }
     } catch (err) {
       console.error(err);
       addToast(err.message || 'Failed to load partner dashboard stats', 'error');
@@ -135,10 +148,10 @@ export const PartnerDashboardPage = ({ onNavigate }) => {
             <DollarSign size={18} color="var(--accent-emerald)" />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', marginTop: '8px' }}>
-            ₹{Number(stats?.totalCommissionEarned || 68500).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            ₹{Number(stats?.totalCommissionEarned ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)', marginTop: '4px' }}>
-            ● Lifetime 25% recurring rev-share
+            ● Lifetime recurring revenue share
           </div>
         </div>
 
@@ -149,7 +162,7 @@ export const PartnerDashboardPage = ({ onNavigate }) => {
             <CreditCard size={18} color="var(--accent-amber)" />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-amber)', marginTop: '8px' }}>
-            ₹{Number(stats?.availablePayoutBalance || 24500).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            ₹{Number(stats?.availablePayoutBalance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', justifyContent: 'space-between' }}>
             <span>Ready for bank withdrawal</span>
@@ -169,10 +182,10 @@ export const PartnerDashboardPage = ({ onNavigate }) => {
             <Users size={18} color="var(--accent-cyan)" />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#fff', marginTop: '8px' }}>
-            {stats?.totalReferrals || 18} <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Traders</span>
+            {stats?.totalReferrals ?? 0} <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Traders</span>
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            <strong style={{ color: 'var(--accent-emerald)' }}>{stats?.activeSubscribers || 12}</strong> Active Paid Subscribers
+            <strong style={{ color: 'var(--accent-emerald)' }}>{stats?.activeSubscribers ?? 0}</strong> Active Paid Subscribers
           </div>
         </div>
 
@@ -183,10 +196,34 @@ export const PartnerDashboardPage = ({ onNavigate }) => {
             <TrendingUp size={18} color="var(--accent-purple)" />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--accent-purple)', marginTop: '8px' }}>
-            {stats?.conversionRate || 72.5}%
+            {stats?.conversionRate != null ? `${stats.conversionRate}%` : '0.0%'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            30-Day Fleet Vol: ₹{Number(stats?.monthlyReferredVolume || 2450000).toLocaleString('en-IN')}
+            30-Day Fleet Vol: ₹{Number(stats?.monthlyReferredVolume ?? 0).toLocaleString('en-IN')}
+          </div>
+        </div>
+
+        {/* Partner Broker Account Binding */}
+        <div
+          className="glass-panel"
+          onClick={() => onNavigate && onNavigate('partner-broker')}
+          style={{
+            padding: '20px',
+            borderLeft: `4px solid ${brokerSession?.connected ? 'var(--accent-emerald)' : 'var(--accent-amber)'}`,
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 600 }}>
+            <span>PARTNER BROKER LINK</span>
+            <Link2 size={18} color={brokerSession?.connected ? 'var(--accent-emerald)' : 'var(--accent-amber)'} />
+          </div>
+          <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#fff', marginTop: '8px' }}>
+            {brokerSession?.connected ? `${brokerSession.brokerCode} Active` : 'Disconnected'}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: brokerSession?.connected ? 'var(--accent-emerald)' : 'var(--accent-amber)', marginTop: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{brokerSession?.connected ? `ID: ${brokerSession.accountClientId}` : 'Click to connect broker'}</span>
+            <span style={{ textDecoration: 'underline' }}>Configure &rarr;</span>
           </div>
         </div>
       </div>

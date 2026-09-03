@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -134,12 +134,45 @@ class MockBrokerAdapter(BrokerAdapter):
         ]
 
     async def get_funds(self, account: Any, credentials: Dict[str, Any]) -> Funds:
+        bal = Decimal(str(credentials.get("mockAvailableBalance", "100000.00")))
         return Funds(
-            available_balance=Decimal("100000.00"),
-            sod_limit=Decimal("100000.00"),
+            available_balance=bal,
+            sod_limit=bal,
             collateral_amount=Decimal("0.00"),
             receiveable_amount=Decimal("0.00"),
-            utilized_amount=Decimal("10000.00"),
+            utilized_amount=Decimal("0.00"),
             blocked_payout_amount=Decimal("0.00"),
-            withdrawable_balance=Decimal("90000.00")
+            withdrawable_balance=bal
         )
+
+    async def get_orders(self, account: Any, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "orderId": "MOCK_ORD_101",
+                "tradingSymbol": "NIFTY 24500 CE",
+                "securityId": "52145",
+                "transactionType": "BUY",
+                "exchangeSegment": "NSE_FNO",
+                "productType": "INTRADAY",
+                "orderType": "MARKET",
+                "orderStatus": "TRADED",
+                "quantity": 50,
+                "price": 142.50,
+                "createTime": "2026-09-03T09:20:15Z"
+            }
+        ]
+
+    async def get_trades(self, account: Any, credentials: Dict[str, Any], order_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {
+                "tradeId": "MOCK_TRD_201",
+                "orderId": "MOCK_ORD_101",
+                "tradingSymbol": "NIFTY 24500 CE",
+                "transactionType": "BUY",
+                "exchangeSegment": "NSE_FNO",
+                "productType": "INTRADAY",
+                "tradedQuantity": 50,
+                "tradedPrice": 142.50,
+                "tradeTime": "2026-09-03T09:20:18Z"
+            }
+        ]

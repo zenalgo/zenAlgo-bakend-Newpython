@@ -157,7 +157,7 @@ export const StrategyMarketplacePage = () => {
                     borderRadius: '4px',
                     fontSize: '0.75rem'
                   }}>
-                    🟢 IN PROFIT (+₹{(s.latestExecution.currentPnl || 525).toFixed(2)})
+                    🟢 IN POSITION ({s.latestExecution.currentPnl != null ? `${Number(s.latestExecution.currentPnl) >= 0 ? '+' : ''}₹${Number(s.latestExecution.currentPnl).toFixed(2)}` : 'Live'})
                   </span>
                 ) : s.latestExecution?.status === 'SQUARED_OFF' ? (
                   <span style={{
@@ -168,10 +168,10 @@ export const StrategyMarketplacePage = () => {
                     borderRadius: '4px',
                     fontSize: '0.75rem'
                   }}>
-                    🛑 SQUARED OFF (+₹{(s.latestExecution.realizedPnl || 525).toFixed(2)})
+                    🛑 SQUARED OFF ({s.latestExecution.realizedPnl != null ? `${Number(s.latestExecution.realizedPnl) >= 0 ? '+' : ''}₹${Number(s.latestExecution.realizedPnl).toFixed(2)}` : 'Closed'})
                   </span>
                 ) : (
-                  <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>No Active Trade</span>
+                  <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>No Active Trade (N/A)</span>
                 )}
               </div>
               {s.latestExecution?.activeLeg && (

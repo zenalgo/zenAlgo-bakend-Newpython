@@ -4,8 +4,13 @@ from datetime import datetime, date, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from decimal import Decimal
 import pytz
+import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.brokers.models import BrokerAccount, UserDailyBrokerConnection, UserOrder, UserTrade, UserHolding, UserPosition, UserFundSnapshot
+from app.users.models import User
 from app.brokers.schemas import GenerateTokenRequest, SetIpRequest, BrokerAccountResponse
 from app.brokers.base.schemas import OrderRequest, OrderResult, BrokerFormConfig, BrokerMetadata, BrokerProfile, Position, Holding, Funds
 from app.brokers.registry import broker_registry
@@ -388,4 +393,146 @@ async def convert_user_position(db: AsyncSession, user_id: int, payload: Dict[st
         "brokerCode": account.broker_code,
         "status": "SUCCESS",
         "message": "Position converted successfully"
+    }
+
+
+async def get_user_orders(db: AsyncSession, user_id: int) -> List[Dict[str, Any]]:
+    """Retrieves order book for user's active connected broker."""
+    account = await get_active_broker_for_user(db, user_id)
+    adapter = broker_registry.get(account.broker_code)
+    if hasattr(adapter, "get_orders"):
+        return await adapter.get_orders(account, account.credentials)
+    return []
+
+
+async def get_user_trades(db: AsyncSession, user_id: int) -> List[Dict[str, Any]]:
+    """Retrieves executed trades for user's active connected broker."""
+    account = await get_active_broker_for_user(db, user_id)
+    adapter = broker_registry.get(account.broker_code)
+    if hasattr(adapter, "get_trades"):
+        return await adapter.get_trades(account, account.credentials)
+    return []
+
+
+async def place_user_order(db: AsyncSession, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Places a manual or instant order directly through active connected broker."""
+    account = await get_active_broker_for_user(db, user_id)
+    adapter = broker_registry.get(account.broker_code)
+    
+    correlation_id = payload.get("correlationId") or f"MANUAL-{str(uuid.uuid4())[:8]}"
+    order_req = OrderRequest(
+        trading_symbol=payload.get("tradingSymbol") or payload.get("trading_symbol", "RELIANCE"),
+        security_id=str(payload.get("securityId") or payload.get("security_id", "2885")),
+        exchange_segment=payload.get("exchangeSegment") or payload.get("exchange_segment", "NSE_EQ"),
+        transaction_type=payload.get("transactionType") or payload.get("transaction_type", "BUY"),
+        quantity=int(payload.get("quantity", 1)),
+        order_type=payload.get("orderType") or payload.get("order_type", "MARKET"),
+        product_type=payload.get("productType") or payload.get("product_type", "INTRADAY"),
+        price=Decimal(str(payload.get("price") or 0)),
+        trigger_price=Decimal(str(payload.get("triggerPrice") or payload.get("trigger_price") or 0)),
+        validity=payload.get("validity", "DAY"),
+        correlation_id=correlation_id
+    )
+
+    # 50% Balance Allocation Cap Rule (for BUY orders)
+    if order_req.transaction_type == "BUY":
+        user_balance = Decimal("0.00")
+        try:
+            funds_data = await adapter.get_funds(account, account.credentials)
+            if funds_data and hasattr(funds_data, "available_balance") and funds_data.available_balance is not None:
+                user_balance = Decimal(str(funds_data.available_balance))
+            elif isinstance(funds_data, dict):
+                b_val = funds_data.get("availableBalance") or funds_data.get("available_balance") or funds_data.get("sodLimit") or 0
+                user_balance = Decimal(str(b_val))
+        except Exception as e:
+            logger.warning("Could not fetch broker funds for user %s: %s", user_id, e)
+
+        if user_balance <= 0:
+            stmt_fund = select(UserFundSnapshot).where(
+                UserFundSnapshot.user_id == user_id,
+                UserFundSnapshot.snapshot_date == get_today_kolkata()
+            )
+            res_fund = await db.execute(stmt_fund)
+            fund_snap = res_fund.scalar_one_or_none()
+            if fund_snap and fund_snap.available_balance > 0:
+                user_balance = Decimal(str(fund_snap.available_balance))
+
+        # If price is passed or can be estimated, enforce 50% limit
+        estimated_value = order_req.price * Decimal(str(order_req.quantity))
+        if user_balance > 0 and estimated_value > 0:
+            max_allowed = user_balance * Decimal("0.50")
+            if estimated_value > max_allowed:
+                rej_msg = (
+                    f"Order value (₹{estimated_value:,.2f}) exceeds 50% maximum allocation limit of user balance "
+                    f"(Available Balance: ₹{user_balance:,.2f}, Max 50% Allowed: ₹{max_allowed:,.2f})."
+                )
+                # Persist rejected order to database for audit trail
+                rejected_order = UserOrder(
+                    user_id=user_id,
+                    broker_name=account.broker_code,
+                    broker_order_id=None,
+                    correlation_id=correlation_id,
+                    trading_symbol=order_req.trading_symbol,
+                    security_id=order_req.security_id,
+                    exchange_segment=order_req.exchange_segment,
+                    transaction_type=order_req.transaction_type,
+                    order_type=order_req.order_type,
+                    product_type=order_req.product_type,
+                    quantity=order_req.quantity,
+                    price=order_req.price,
+                    order_status="REJECTED",
+                    rejection_reason=rej_msg
+                )
+                db.add(rejected_order)
+                await db.flush()
+                raise ValidationError(rej_msg)
+    
+    res = await adapter.place_order(account, account.credentials, order_req)
+    
+    user_order = UserOrder(
+        user_id=user_id,
+        broker_name=account.broker_code,
+        broker_order_id=res.broker_order_id,
+        correlation_id=correlation_id,
+        trading_symbol=order_req.trading_symbol,
+        security_id=order_req.security_id,
+        exchange_segment=order_req.exchange_segment,
+        transaction_type=order_req.transaction_type,
+        order_type=order_req.order_type,
+        product_type=order_req.product_type,
+        quantity=order_req.quantity,
+        price=order_req.price,
+        order_status=res.order_status
+    )
+    db.add(user_order)
+    await db.flush()
+    
+    return {
+        "brokerOrderId": res.broker_order_id,
+        "orderStatus": res.order_status,
+        "tradingSymbol": order_req.trading_symbol,
+        "quantity": order_req.quantity,
+        "price": float(order_req.price),
+        "message": res.message or "Order placed successfully"
+    }
+
+
+async def cancel_user_order(db: AsyncSession, user_id: int, order_id: str) -> Dict[str, Any]:
+    """Cancels an open order through active connected broker."""
+    account = await get_active_broker_for_user(db, user_id)
+    adapter = broker_registry.get(account.broker_code)
+    success = await adapter.cancel_order(account, account.credentials, order_id)
+    
+    stmt = select(UserOrder).where(UserOrder.broker_order_id == order_id)
+    res = await db.execute(stmt)
+    order_record = res.scalar_one_or_none()
+    if order_record:
+        order_record.order_status = "CANCELLED"
+        db.add(order_record)
+        await db.flush()
+        
+    return {
+        "orderId": order_id,
+        "status": "CANCELLED",
+        "success": bool(success)
     }

@@ -99,6 +99,33 @@ async def list_user_accounts(
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="Connected broker accounts retrieved", data=data, requestId=request_id)
 
+@generic_router.post("/accounts", response_model=ApiResponse[BrokerAccountResponse])
+async def create_broker_account_legacy(
+    body: Dict[str, Any],
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Alias for connecting broker account."""
+    broker_code = body.get("brokerCode") or body.get("broker_code") or "DHAN"
+    credentials = body.get("credentials") or {
+        "clientId": body.get("accountClientId") or body.get("clientId"),
+        "accessToken": body.get("accessToken")
+    }
+    account = await service.connect_broker(db, current_user.id, broker_code, credentials)
+    dto = BrokerAccountResponse(
+        id=account.id,
+        userId=account.user_id,
+        brokerCode=account.broker_code,
+        brokerName=account.broker_code,
+        accountClientId=account.account_client_id,
+        status=account.status,
+        connectionDate=account.connection_date,
+        expiryTime=account.expiry_time
+    )
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message=f"Successfully connected {account.broker_code} account", data=dto, requestId=request_id)
+
 @generic_router.delete("/accounts/{account_id}", response_model=ApiResponse[str])
 async def disconnect_user_account(
     account_id: int,
@@ -413,6 +440,48 @@ async def calculate_margin(
     margin = await service.calculate_user_margin(db, current_user.id, body)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="Dhan margin calculated successfully", data=margin, requestId=request_id)
+
+@dhan_router.get("/orders", response_model=ApiResponse[List[Dict[str, Any]]])
+async def get_orders(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    orders = await service.get_user_orders(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan orders retrieved successfully", data=orders, requestId=request_id)
+
+@dhan_router.post("/orders", response_model=ApiResponse[Dict[str, Any]])
+async def place_order(
+    body: Dict[str, Any],
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await service.place_user_order(db, current_user.id, body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan order placed successfully", data=result, requestId=request_id)
+
+@dhan_router.delete("/orders/{order_id}", response_model=ApiResponse[Dict[str, Any]])
+async def cancel_order(
+    order_id: str,
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await service.cancel_user_order(db, current_user.id, order_id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan order cancelled successfully", data=result, requestId=request_id)
+
+@dhan_router.get("/trades", response_model=ApiResponse[List[Dict[str, Any]]])
+async def get_trades(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    trades = await service.get_user_trades(db, current_user.id)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(success=True, message="Dhan trades retrieved successfully", data=trades, requestId=request_id)
 
 
 # Include both sub-routers into main router

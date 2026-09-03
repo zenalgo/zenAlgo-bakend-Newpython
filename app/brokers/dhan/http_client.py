@@ -46,7 +46,12 @@ class DhanHttpClient:
                 await asyncio.sleep(0.1)
 
             base_target = self.auth_base_url if is_auth_api else self.base_url
-            url = f"{base_target}{path}" if path.startswith("/") else f"{base_target}/{path}"
+            clean_path = path
+            if base_target.endswith("/v2") and clean_path.startswith("/v2"):
+                clean_path = clean_path[3:]
+            if not clean_path.startswith("/"):
+                clean_path = "/" + clean_path
+            url = f"{base_target}{clean_path}"
 
             headers = {
                 "Content-Type": "application/json",

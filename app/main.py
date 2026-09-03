@@ -11,6 +11,7 @@ import app.execution.models
 import app.strategies.models
 import app.wallets.models
 import app.subscriptions.models
+import app.instruments.models
 
 # Import routers
 from app.auth.router import router as auth_router
@@ -21,6 +22,8 @@ from app.strategies.router import router as strategies_router, rules_router, str
 from app.brokers.router import router as brokers_router
 from app.execution.router import router as execution_router, trader_exec_router
 from app.partners.router import router as partners_router
+from app.instruments.router import router as instruments_router
+from app.instruments.service import seed_instruments_if_empty
 
 app = FastAPI(
     title="ZenAlgo Platform Backend",
@@ -64,6 +67,12 @@ from app.brokers.websocket import router as ws_router
 async def on_startup():
     await redis_manager.init_redis()
     asyncio.create_task(order_reconciliation_worker.start())
+    try:
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            await seed_instruments_if_empty(session)
+    except Exception as e:
+        print(f"Instrument seeder notice: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -83,6 +92,7 @@ app.include_router(brokers_router)
 app.include_router(execution_router)
 app.include_router(trader_exec_router)
 app.include_router(partners_router, prefix="/api/v1")
+app.include_router(instruments_router, prefix="/api/v1")
 app.include_router(ws_router)
 
 @app.get("/health", tags=["Health"])

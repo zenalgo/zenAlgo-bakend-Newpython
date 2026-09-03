@@ -18,7 +18,7 @@ from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, Strate
 from app.strategies.instrument_resolver import InstrumentResolver
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
 from app.execution.schemas import UserExecutionResult, StrategyExecutionBatchResponse, StrategyUserExecutionTraceResponse, StrategyExecutionTraceEventResponse, ExecutionFailureSummaryResponse, FailureReasonCount
-from app.brokers.models import BrokerAccount
+from app.brokers.models import BrokerAccount, UserFundSnapshot
 from app.brokers.service import get_active_broker_for_user, get_today_kolkata
 from app.brokers.registry import broker_registry
 from app.brokers.base.schemas import OrderRequest
@@ -266,6 +266,74 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                     return await fail_trace(db, trace, "BROKER_SESSION_CHECK", failure_code, val_res.message or f"Session status is {val_res.status}", "BROKER_SESSION_INVALID")
 
                 await log_event(db, trace.id, "BROKER_SESSION_CHECK", "SUCCESS", f"{broker_account.broker_code} broker session verified")
+
+                # 5b. Live Balance Check & 50% Maximum Allocation Rule
+                trace.current_step = "BALANCE_CHECK"
+                trace.status = "BALANCE_CHECKING"
+                db.add(trace)
+                await db.flush()
+
+                # Calculate total order value required across all strategy legs
+                total_order_value = Decimal("0.00")
+                for leg in version.legs:
+                    resolved = InstrumentResolver.resolve_leg_instrument(version.underlying, leg)
+                    calculated_qty = leg.lots * resolved.lot_size
+                    leg_price = leg.strike_value if leg.strike_value is not None and leg.strike_value > 0 else Decimal("100.00")
+                    total_order_value += (Decimal(str(leg_price)) * Decimal(str(calculated_qty)))
+
+                # Query live user balance from broker adapter
+                user_balance = Decimal("0.00")
+                try:
+                    funds_data = await adapter.get_funds(broker_account, broker_account.credentials)
+                    if funds_data and hasattr(funds_data, "available_balance") and funds_data.available_balance is not None:
+                        user_balance = Decimal(str(funds_data.available_balance))
+                    elif isinstance(funds_data, dict):
+                        b_val = funds_data.get("availableBalance") or funds_data.get("available_balance") or funds_data.get("sodLimit") or 0
+                        user_balance = Decimal(str(b_val))
+                except Exception as ex:
+                    logger.warning("Live broker fund fetch notice for user %s: %s", user_id, ex)
+
+                # Fallback to UserFundSnapshot or User Wallet if broker funds are zero/unavailable
+                if user_balance <= 0:
+                    stmt_fund = select(UserFundSnapshot).where(
+                        UserFundSnapshot.user_id == user_id,
+                        UserFundSnapshot.snapshot_date == today
+                    )
+                    res_fund = await db.execute(stmt_fund)
+                    fund_snapshot = res_fund.scalar_one_or_none()
+                    if fund_snapshot and fund_snapshot.available_balance > 0:
+                        user_balance = Decimal(str(fund_snapshot.available_balance))
+                    else:
+                        from app.wallets.models import Wallet
+                        stmt_w = select(Wallet).where(Wallet.user_id == user_id)
+                        res_w = await db.execute(stmt_w)
+                        user_wallet = res_w.scalar_one_or_none()
+                        if user_wallet and user_wallet.available_margin > 0:
+                            user_balance = Decimal(str(user_wallet.available_margin))
+
+                if user_balance <= 0:
+                    return await fail_trace(
+                        db, trace, "BALANCE_CHECK", "INSUFFICIENT_FUNDS",
+                        "User trading balance is zero or unavailable.",
+                        "NOT_EXECUTED"
+                    )
+
+                # Enforce 50% Balance Cap Rule: Order Value must be <= 50% of available balance
+                max_allowed_allocation = user_balance * Decimal("0.50")
+                if total_order_value > max_allowed_allocation:
+                    fail_msg = (
+                        f"Order value (₹{total_order_value:,.2f}) exceeds 50% maximum allocation limit of user balance "
+                        f"(Available Balance: ₹{user_balance:,.2f}, Max 50% Allowed: ₹{max_allowed_allocation:,.2f})."
+                    )
+                    return await fail_trace(
+                        db, trace, "BALANCE_CHECK", "ORDER_EXCEEDS_50_PCT_BALANCE",
+                        fail_msg, "REJECTED"
+                    )
+
+                await log_event(
+                    db, trace.id, "BALANCE_CHECK", "SUCCESS",
+                    f"Balance check passed: Order value ₹{total_order_value:,.2f} is within 50% of available balance ₹{user_balance:,.2f} (50% Cap: ₹{max_allowed_allocation:,.2f})"
+                )
 
                 # 6. Atomic Quota Reservation
                 trace.current_step = "QUOTA_RESERVATION"

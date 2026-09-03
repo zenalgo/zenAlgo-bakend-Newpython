@@ -15,6 +15,7 @@ from app.subscriptions.models import Plan, PlanFeature, PlanStrategyAccess, Subs
 from app.strategies.models import Strategy, StrategyVersion, StrategyLeg, StrategyEntrySetting, StrategyEntryDay, StrategyExitSetting, StrategyExecution, StrategyExecutionLeg
 from app.execution.models import StrategySignal, StrategyExecutionBatch, StrategyUserExecutionTrace, StrategyExecutionTraceEvent
 from app.brokers.models import DhanBrokerSession, UserHolding, UserPosition, UserOrder, UserTrade, UserFundSnapshot
+from app.instruments.models import Instrument, BrokerInstrument
 
 # this is the Alembic Config object
 config = context.config

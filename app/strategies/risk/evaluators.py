@@ -430,13 +430,33 @@ def evaluate_capital_and_margin(
             configured_limit=f"₹{required_capital:,.2f}",
             reason=f"Insufficient capital: available ₹{available_capital:,.2f} < required ₹{required_capital:,.2f}."
         )
+        _log_check_result(res, strategy_id, strategy_version_id, signal_id, user_id)
+        return res
+
+    # 50% Balance Allocation Cap Rule
+    max_allowed_allocation = available_capital * Decimal("0.50")
+    if required_capital > max_allowed_allocation:
+        res = RiskCheckResult(
+            check_type=RiskCheckType.BALANCE_50_PCT_RULE,
+            passed=False,
+            failure_code=RiskFailureCode.ORDER_EXCEEDS_50_PCT_BALANCE,
+            actual_value=f"Order Value: ₹{required_capital:,.2f}",
+            configured_limit=f"50% Cap: ₹{max_allowed_allocation:,.2f} (Balance: ₹{available_capital:,.2f})",
+            reason=(
+                f"Order value (₹{required_capital:,.2f}) exceeds 50% maximum allocation limit of user balance "
+                f"(Available Balance: ₹{available_capital:,.2f}, Max 50% Allowed: ₹{max_allowed_allocation:,.2f})."
+            )
+        )
     else:
         res = RiskCheckResult(
             check_type=RiskCheckType.CAPITAL_AND_MARGIN,
             passed=True,
             actual_value=f"₹{available_capital:,.2f}",
-            configured_limit=f"₹{required_capital:,.2f}",
-            reason=f"Capital validated: available ₹{available_capital:,.2f} >= required ₹{required_capital:,.2f}."
+            configured_limit=f"50% Cap: ₹{max_allowed_allocation:,.2f}",
+            reason=(
+                f"Capital validated: order value ₹{required_capital:,.2f} is within 50% of available balance "
+                f"₹{available_capital:,.2f} (50% Cap: ₹{max_allowed_allocation:,.2f})."
+            )
         )
 
     _log_check_result(res, strategy_id, strategy_version_id, signal_id, user_id)

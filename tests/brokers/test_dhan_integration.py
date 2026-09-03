@@ -34,3 +34,32 @@ async def test_dhan_adapter_place_order_sandbox():
     res = await adapter.place_order(None, {"clientId": "1000000001", "accessToken": "token"}, req)
     assert res.broker_order_id.startswith("DHAN_MOCK_")
     assert res.order_status == "OPEN"
+
+@pytest.mark.asyncio
+async def test_dhan_adapter_get_orders_sandbox():
+    adapter = DhanAdapter()
+    orders = await adapter.get_orders(None, {"clientId": "1000000001", "accessToken": "token"})
+    assert isinstance(orders, list)
+    assert len(orders) >= 1
+    assert "orderId" in orders[0]
+
+@pytest.mark.asyncio
+async def test_dhan_adapter_get_trades_sandbox():
+    adapter = DhanAdapter()
+    trades = await adapter.get_trades(None, {"clientId": "1000000001", "accessToken": "token"})
+    assert isinstance(trades, list)
+    assert len(trades) >= 1
+    assert "tradeId" in trades[0]
+
+@pytest.mark.asyncio
+async def test_dhan_adapter_calculate_margin_sandbox():
+    adapter = DhanAdapter()
+    res = await adapter.calculate_margin(None, {"clientId": "1000000001", "accessToken": "token"}, {"tradingSymbol": "NIFTY"})
+    assert res["status"] == "SUCCESS"
+    assert "totalMarginRequired" in res
+
+@pytest.mark.asyncio
+async def test_dhan_adapter_convert_position_sandbox():
+    adapter = DhanAdapter()
+    res = await adapter.convert_position(None, {"clientId": "1000000001", "accessToken": "token"}, {"tradingSymbol": "BANKNIFTY"})
+    assert res["status"] == "SUCCESS"

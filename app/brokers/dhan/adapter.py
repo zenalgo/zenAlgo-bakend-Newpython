@@ -143,10 +143,10 @@ class DhanAdapter(BrokerAdapter):
         )
         return BrokerProfile(
             client_id=client_id,
-            name=data.get("dhanClientName") or data.get("name") or "Dhan User",
-            ucc=data.get("dhanClientUcc") or data.get("ucc") or "",
+            name=data.get("dhanClientName") or data.get("name") or f"Dhan Trader ({client_id})",
+            ucc=data.get("dhanClientUcc") or (f"Segments: {data.get('activeSegment').strip(', ')}" if data.get("activeSegment") else ""),
             email=data.get("email") or "",
-            mobile_no=data.get("mobileNo") or data.get("mobile") or ""
+            mobile_no=data.get("mobileNo") or data.get("mobile") or (f"Valid: {data.get('tokenValidity')}" if data.get("tokenValidity") else "")
         )
 
     async def get_funds(self, account: Any, credentials: Dict[str, Any]) -> Funds:
@@ -378,10 +378,60 @@ class DhanAdapter(BrokerAdapter):
             payload=payload
         )
 
+    async def get_orders(self, account: Any, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if settings.DHAN_SANDBOX_MODE:
+            return [
+                {
+                    "orderId": "DHAN_MOCK_101",
+                    "tradingSymbol": "NIFTY 24500 CE",
+                    "securityId": "52145",
+                    "transactionType": "BUY",
+                    "exchangeSegment": "NSE_FNO",
+                    "productType": "INTRADAY",
+                    "orderType": "MARKET",
+                    "orderStatus": "TRADED",
+                    "quantity": 50,
+                    "price": 142.50,
+                    "createTime": "2026-09-03T09:20:15Z"
+                },
+                {
+                    "orderId": "DHAN_MOCK_102",
+                    "tradingSymbol": "BANKNIFTY 52000 PE",
+                    "securityId": "53890",
+                    "transactionType": "SELL",
+                    "exchangeSegment": "NSE_FNO",
+                    "productType": "INTRADAY",
+                    "orderType": "LIMIT",
+                    "orderStatus": "OPEN",
+                    "quantity": 15,
+                    "price": 285.00,
+                    "createTime": "2026-09-03T10:15:30Z"
+                }
+            ]
+
+        res = await dhan_http_client._request(
+            method="GET",
+            path="/v2/orders",
+            credentials=credentials
+        )
+        return res if isinstance(res, list) else []
+
     async def get_trades(self, account: Any, credentials: Dict[str, Any], order_id: Optional[str] = None) -> List[Dict[str, Any]]:
         path = f"/v2/trades/{order_id}" if order_id else "/v2/trades"
         if settings.DHAN_SANDBOX_MODE:
-            return []
+            return [
+                {
+                    "tradeId": "TRD_MOCK_901",
+                    "orderId": "DHAN_MOCK_101",
+                    "tradingSymbol": "NIFTY 24500 CE",
+                    "transactionType": "BUY",
+                    "exchangeSegment": "NSE_FNO",
+                    "productType": "INTRADAY",
+                    "tradedQuantity": 50,
+                    "tradedPrice": 142.50,
+                    "tradeTime": "2026-09-03T09:20:18Z"
+                }
+            ]
 
         res = await dhan_http_client._request(
             method="GET",

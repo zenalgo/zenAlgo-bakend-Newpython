@@ -50,7 +50,7 @@ export const PayoutsPage = () => {
       addToast('Please enter a valid payout amount', 'warning');
       return;
     }
-    if (numAmount > Number(stats?.availablePayoutBalance || 24500)) {
+    if (numAmount > Number(stats?.availablePayoutBalance ?? 0)) {
       addToast('Payout amount exceeds available commission balance', 'warning');
       return;
     }
@@ -100,7 +100,7 @@ export const PayoutsPage = () => {
         <div className="glass-panel" style={{ padding: '24px', borderLeft: '4px solid var(--accent-amber)' }}>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>AVAILABLE COMMISSION BALANCE</div>
           <div style={{ fontSize: '2.2rem', fontWeight: 800, color: 'var(--accent-amber)', marginTop: '6px' }}>
-            ₹{Number(stats?.availablePayoutBalance || 24500).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            ₹{Number(stats?.availablePayoutBalance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--accent-emerald)', marginTop: '8px' }}>
             ● Minimum withdrawal threshold: ₹1,000.00 (No TDS / Zero Gateway Deductions)
