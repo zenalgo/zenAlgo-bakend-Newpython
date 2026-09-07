@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
+from decimal import Decimal
 from typing import List, Dict, Any, Optional
 
 from app.core.database import get_db
@@ -482,6 +483,111 @@ async def get_trades(
     trades = await service.get_user_trades(db, current_user.id)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(success=True, message="Dhan trades retrieved successfully", data=trades, requestId=request_id)
+
+
+
+# --- STOP-LOSS ORDER ENDPOINTS ---
+
+@dhan_router.post(
+    "/orders/stop-loss",
+    response_model=ApiResponse[Dict[str, Any]],
+    summary="Place Stop-Loss or Stop-Loss Market order on Dhan",
+    tags=["Dhan HQ Integration"],
+)
+async def place_stop_loss_order(
+    body: Dict[str, Any],
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Places a **STOP_LOSS** or **STOP_LOSS_MARKET** protective order on Dhan
+    via `POST https://api.dhan.co/v2/orders`.
+
+    **Required fields:**
+    - `securityId` / `security_id` — Dhan scrip-master security ID
+    - `tradingSymbol` / `trading_symbol` — e.g. `"BANKNIFTY24500PE"`
+    - `transactionType` — `"BUY"` or `"SELL"`
+    - `exchangeSegment` — `"NSE_EQ"`, `"NSE_FNO"`, `"BSE_EQ"`, etc.
+    - `productType` — `"INTRADAY"`, `"CNC"`, `"MARGIN"`
+    - `orderType` — `"STOP_LOSS"` or `"STOP_LOSS_MARKET"`
+    - `quantity` — number of shares / lots
+    - `triggerPrice` — price at which the SL activates
+    - `price` — limit price after trigger (**required for STOP_LOSS**, set `0` for STOP_LOSS_MARKET)
+
+    **Business rules enforced:**
+    - For `STOP_LOSS`: `triggerPrice > price` for SELL, `triggerPrice < price` for BUY.
+    - For `STOP_LOSS_MARKET`: price is automatically set to `0`.
+    """
+    result = await service.place_stop_loss_order(db, current_user.id, body)
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message=result.get("message", "Stop-loss order placed successfully"),
+        data=result,
+        requestId=request_id,
+    )
+
+
+@dhan_router.post(
+    "/orders/strategy-stop-loss",
+    response_model=ApiResponse[Dict[str, Any]],
+    summary="Place a stop-loss order from an active strategy execution",
+    tags=["Dhan HQ Integration"],
+)
+async def place_strategy_stop_loss_order(
+    body: Dict[str, Any],
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Convenience endpoint: looks up the first FILLED leg of a
+    `StrategyExecution` and places a stop-loss order automatically using
+    the correct transaction type (reverse of entry side), quantity, and
+    exchange segment.
+
+    **Required fields:**
+    - `strategyExecutionId` / `strategy_execution_id` — the execution to protect
+    - `triggerPrice` — SL activation price
+
+    **Optional fields:**
+    - `price` — limit price (only for `orderType=STOP_LOSS`)
+    - `orderType` — `"STOP_LOSS_MARKET"` (default) or `"STOP_LOSS"`
+    - `quantity` — override filled qty (defaults to execution leg qty)
+    """
+    execution_id = body.get("strategyExecutionId") or body.get("strategy_execution_id")
+    if not execution_id:
+        from app.core.exceptions import ValidationError
+        raise ValidationError("strategyExecutionId is required")
+
+    trigger_raw = body.get("triggerPrice") or body.get("trigger_price")
+    if not trigger_raw:
+        from app.core.exceptions import ValidationError
+        raise ValidationError("triggerPrice is required")
+
+    trigger_price = Decimal(str(trigger_raw))
+    price_raw = body.get("price")
+    price = Decimal(str(price_raw)) if price_raw is not None else None
+    order_type = str(body.get("orderType") or body.get("order_type", "STOP_LOSS_MARKET")).upper()
+    quantity = int(body["quantity"]) if body.get("quantity") else None
+
+    result = await service.place_strategy_stop_loss_order(
+        db=db,
+        user_id=current_user.id,
+        strategy_execution_id=int(execution_id),
+        trigger_price=trigger_price,
+        price=price,
+        order_type=order_type,
+        quantity=quantity,
+    )
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message=result.get("message", "Strategy stop-loss order placed successfully"),
+        data=result,
+        requestId=request_id,
+    )
 
 
 # Include both sub-routers into main router

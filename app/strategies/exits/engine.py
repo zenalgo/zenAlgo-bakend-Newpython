@@ -28,6 +28,14 @@ from app.strategies.exits.evaluators import (
     evaluate_strategy_invalidation
 )
 from app.strategies.exits.trailing import trailing_state_manager
+from app.strategies.exits.trailing_profit import (
+    TrailingProfitState,
+    TrailingProfitStateManager,
+    advance_trailing_stop as advance_trailing_profit_sl,
+    is_sl_triggered as is_trailing_profit_sl_triggered,
+)
+
+trailing_profit_state_manager = TrailingProfitStateManager()
 
 logger = logging.getLogger(__name__)
 ZONE_KOLKATA = pytz.timezone("Asia/Kolkata")
@@ -53,10 +61,21 @@ class ExitEngine:
         enable_trailing: bool = False,
         enable_partial_1r: bool = False,
         invalidation_level: Optional[Decimal] = None,
-        expiry_date_ist: Optional[date] = None
+        expiry_date_ist: Optional[date] = None,
+        enable_trailing_profit_sl: bool = True,
+        trailing_profit_step_pct: Decimal = Decimal("1.0"),
     ) -> List[TradingSignal]:
         """
         Main entry point for evaluating exits across all active user executions for a strategy.
+
+        Parameters
+        ----------
+        enable_trailing_profit_sl : bool
+            When True (default), the 1%-profit trailing SL ratchet is active.
+            Every time unrealised profit crosses a new 1% band the SL is advanced
+            forward by `trailing_profit_step_pct`% of the entry price.
+        trailing_profit_step_pct : Decimal
+            Step size for the trailing profit SL ratchet (default 1.0 %).
         """
         market_event_key = f"{strategy_id}:{strategy_version_id}:EV-{event.event_id}"
         current_price = Decimal(str(event.price if event.price is not None else event.close))
@@ -134,8 +153,48 @@ class ExitEngine:
             entry_price = primary_leg.average_fill_price or primary_leg.price or Decimal("100.00")
             direction = PositionDirection.BUY # Default long option
 
-            # Determine effective Stop Loss
-            sl_price = custom_stop_loss if custom_stop_loss is not None else (entry_price * Decimal("0.95")) # 5% fallback SL
+            # ── Trailing-Profit SL Advancement (Feature 2) ──────────────────
+            # Every time unrealised profit crosses a new 1% band the SL is
+            # ratcheted forward by 1% of the entry price (never backward).
+            base_sl = custom_stop_loss if custom_stop_loss is not None else (entry_price * Decimal("0.95"))
+
+            if enable_trailing_profit_sl:
+                tp_default_state = TrailingProfitState(
+                    execution_id=execution.id,
+                    direction=direction.value,
+                    entry_price=entry_price,
+                    initial_stop_loss=base_sl,
+                    current_stop_loss=base_sl,
+                    step_pct=trailing_profit_step_pct,
+                )
+                tp_state = await trailing_profit_state_manager.get_state(
+                    db, execution.id, tp_default_state
+                )
+                if tp_state:
+                    updated_tp_state, was_advanced = advance_trailing_profit_sl(
+                        current_price, tp_state
+                    )
+                    if was_advanced or updated_tp_state.peak_profit_pct != tp_state.peak_profit_pct:
+                        await trailing_profit_state_manager.save_state(
+                            db, updated_tp_state, persist_db=was_advanced
+                        )
+                        if was_advanced:
+                            logger.info(
+                                "trailing_profit_sl_ratcheted: execution_id=%s "
+                                "old_sl=%.2f new_sl=%.2f steps=%d profit_pct=%.2f",
+                                execution.id,
+                                float(tp_state.current_stop_loss),
+                                float(updated_tp_state.current_stop_loss),
+                                updated_tp_state.steps_advanced,
+                                float(updated_tp_state.peak_profit_pct),
+                                extra={**exec_log_meta, "event": "trailing_profit_sl_ratcheted"}
+                            )
+                    # Use the ratcheted SL for all subsequent exit checks
+                    sl_price = updated_tp_state.current_stop_loss
+                else:
+                    sl_price = base_sl
+            else:
+                sl_price = base_sl
             
             exit_result: Optional[ExitEvaluationResult] = None
 

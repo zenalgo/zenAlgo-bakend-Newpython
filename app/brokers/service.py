@@ -517,6 +517,215 @@ async def place_user_order(db: AsyncSession, user_id: int, payload: Dict[str, An
     }
 
 
+async def place_stop_loss_order(
+    db: AsyncSession,
+    user_id: int,
+    payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Places a Stop-Loss (STOP_LOSS) or Stop-Loss Market (STOP_LOSS_MARKET) order on
+    Dhan exchange via POST https://api.dhan.co/v2/orders.
+
+    Required payload fields:
+        security_id        str   – Dhan scrip master security ID
+        trading_symbol     str   – Human-readable symbol (e.g. 'NIFTY24500CE')
+        transaction_type   str   – 'BUY' or 'SELL'
+        exchange_segment   str   – 'NSE_EQ', 'NSE_FNO', etc.
+        product_type       str   – 'INTRADAY', 'CNC', 'MARGIN'
+        order_type         str   – 'STOP_LOSS' or 'STOP_LOSS_MARKET'
+        quantity           int
+        trigger_price      float – Activation price for the SL
+        price              float – Limit price after trigger (required for STOP_LOSS, 0 for STOP_LOSS_MARKET)
+        validity           str   – 'DAY' or 'IOC' (default 'DAY')
+
+    Key Rules enforced:
+        - order_type must be STOP_LOSS or STOP_LOSS_MARKET.
+        - For STOP_LOSS: price AND trigger_price are both required.
+        - For STOP_LOSS_MARKET: only trigger_price required; price is forced to 0.
+        - For SELL SL orders: trigger_price > price (trigger higher, limit lower).
+        - For BUY  SL orders: trigger_price < price (trigger lower,  limit higher).
+    """
+    account = await get_active_broker_for_user(db, user_id)
+    adapter = broker_registry.get(account.broker_code)
+
+    order_type = str(payload.get("orderType") or payload.get("order_type", "STOP_LOSS")).upper()
+    if order_type not in ("STOP_LOSS", "STOP_LOSS_MARKET"):
+        raise ValidationError(
+            f"order_type must be 'STOP_LOSS' or 'STOP_LOSS_MARKET', got '{order_type}'"
+        )
+
+    trigger_price_raw = payload.get("triggerPrice") or payload.get("trigger_price")
+    if trigger_price_raw is None:
+        raise ValidationError("triggerPrice is mandatory for stop-loss orders")
+
+    trigger_price = Decimal(str(trigger_price_raw))
+    transaction_type = str(payload.get("transactionType") or payload.get("transaction_type", "SELL")).upper()
+
+    # Derive price: for SL_MARKET force 0, else read from payload
+    if order_type == "STOP_LOSS_MARKET":
+        price = Decimal("0")
+    else:
+        price_raw = payload.get("price")
+        if price_raw is None:
+            raise ValidationError("price is required for STOP_LOSS order type")
+        price = Decimal(str(price_raw))
+        # Guard: SELL SL → triggerPrice must be above limitPrice
+        if transaction_type == "SELL" and trigger_price <= price:
+            raise ValidationError(
+                f"For SELL STOP_LOSS: triggerPrice ({trigger_price}) must be > price ({price})"
+            )
+        # Guard: BUY SL → triggerPrice must be below limitPrice
+        if transaction_type == "BUY" and trigger_price >= price:
+            raise ValidationError(
+                f"For BUY STOP_LOSS: triggerPrice ({trigger_price}) must be < price ({price})"
+            )
+
+    correlation_id = payload.get("correlationId") or f"SL-{str(uuid.uuid4())[:8]}"
+
+    order_req = OrderRequest(
+        trading_symbol=str(payload.get("tradingSymbol") or payload.get("trading_symbol", "")),
+        security_id=str(payload.get("securityId") or payload.get("security_id", "")),
+        exchange_segment=str(payload.get("exchangeSegment") or payload.get("exchange_segment", "NSE_FNO")),
+        transaction_type=transaction_type,
+        quantity=int(payload.get("quantity", 1)),
+        order_type=order_type,
+        product_type=str(payload.get("productType") or payload.get("product_type", "INTRADAY")),
+        price=price,
+        trigger_price=trigger_price,
+        validity=str(payload.get("validity", "DAY")),
+        correlation_id=correlation_id,
+    )
+
+    res = await adapter.place_order(account, account.credentials, order_req)
+
+    # Audit trail
+    user_order = UserOrder(
+        user_id=user_id,
+        broker_name=account.broker_code,
+        broker_order_id=res.broker_order_id,
+        correlation_id=correlation_id,
+        trading_symbol=order_req.trading_symbol,
+        security_id=order_req.security_id,
+        exchange_segment=order_req.exchange_segment,
+        transaction_type=order_req.transaction_type,
+        order_type=order_req.order_type,
+        product_type=order_req.product_type,
+        quantity=order_req.quantity,
+        price=order_req.price,
+        order_status=res.order_status,
+    )
+    db.add(user_order)
+    await db.flush()
+
+    return {
+        "brokerOrderId": res.broker_order_id,
+        "orderStatus": res.order_status,
+        "orderType": order_type,
+        "transactionType": transaction_type,
+        "tradingSymbol": order_req.trading_symbol,
+        "securityId": order_req.security_id,
+        "exchangeSegment": order_req.exchange_segment,
+        "quantity": order_req.quantity,
+        "price": float(order_req.price),
+        "triggerPrice": float(trigger_price),
+        "validity": order_req.validity,
+        "correlationId": correlation_id,
+        "message": res.message or f"Stop-loss order ({order_type}) placed successfully",
+    }
+
+
+async def place_strategy_stop_loss_order(
+    db: AsyncSession,
+    user_id: int,
+    strategy_execution_id: int,
+    trigger_price: Decimal,
+    price: Optional[Decimal] = None,
+    order_type: str = "STOP_LOSS_MARKET",
+    quantity: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Places a stop-loss order derived from an active StrategyExecution's filled leg
+    parameters.  Looks up the execution's security_id, symbol, and lot-size from
+    the first FILLED execution leg.
+
+    Parameters
+    ----------
+    strategy_execution_id : int
+        ID of the StrategyExecution whose position needs the SL order.
+    trigger_price : Decimal
+        The exact stop-loss trigger price.
+    price : Decimal, optional
+        Required for order_type='STOP_LOSS' (limit price after trigger).
+    order_type : str
+        'STOP_LOSS' or 'STOP_LOSS_MARKET' (default).
+    quantity : int, optional
+        Defaults to the filled quantity of the first FILLED leg.
+    """
+    from app.strategies.models import StrategyExecution, StrategyExecutionLeg, StrategyLeg
+
+    stmt = (
+        select(StrategyExecution)
+        .where(StrategyExecution.id == strategy_execution_id)
+        .options()
+    )
+    res = await db.execute(stmt)
+    execution = res.scalar_one_or_none()
+    if not execution:
+        raise ValidationError(f"StrategyExecution #{strategy_execution_id} not found")
+
+    # Resolve the primary filled leg
+    stmt_leg = (
+        select(StrategyExecutionLeg)
+        .where(
+            StrategyExecutionLeg.strategy_execution_id == strategy_execution_id,
+            StrategyExecutionLeg.status == "FILLED",
+        )
+        .order_by(StrategyExecutionLeg.id.asc())
+        .limit(1)
+    )
+    res_leg = await db.execute(stmt_leg)
+    exec_leg = res_leg.scalar_one_or_none()
+
+    if not exec_leg:
+        raise ValidationError(
+            f"No FILLED execution leg found for StrategyExecution #{strategy_execution_id}"
+        )
+
+    # Pull the definition from StrategyLeg for meta (security_id, symbol)
+    stmt_strat_leg = select(StrategyLeg).where(StrategyLeg.id == exec_leg.strategy_leg_id)
+    res_strat_leg = await db.execute(stmt_strat_leg)
+    strat_leg = res_strat_leg.scalar_one_or_none()
+
+    trading_symbol = ""
+    security_id = ""
+    exchange_segment = "NSE_FNO"
+    if strat_leg:
+        exchange_segment = strat_leg.segment or "NSE_FNO"
+
+    filled_qty = quantity or exec_leg.filled_quantity or exec_leg.quantity or 1
+
+    # Entry was BUY → SL is a SELL order, and vice-versa
+    original_side = "BUY"
+    if strat_leg and strat_leg.side:
+        original_side = strat_leg.side.upper()
+    sl_transaction_type = "SELL" if original_side == "BUY" else "BUY"
+
+    payload = {
+        "tradingSymbol": trading_symbol,
+        "securityId": security_id,
+        "exchangeSegment": exchange_segment,
+        "transactionType": sl_transaction_type,
+        "orderType": order_type,
+        "productType": "INTRADAY",
+        "quantity": filled_qty,
+        "triggerPrice": float(trigger_price),
+        "price": float(price) if price else (0 if order_type == "STOP_LOSS_MARKET" else float(trigger_price * Decimal("0.995"))),
+        "validity": "DAY",
+    }
+
+    return await place_stop_loss_order(db, user_id, payload)
+
+
 async def cancel_user_order(db: AsyncSession, user_id: int, order_id: str) -> Dict[str, Any]:
     """Cancels an open order through active connected broker."""
     account = await get_active_broker_for_user(db, user_id)

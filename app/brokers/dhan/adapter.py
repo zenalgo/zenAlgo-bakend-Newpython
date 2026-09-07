@@ -271,8 +271,12 @@ class DhanAdapter(BrokerAdapter):
             "securityId": str(order_req.security_id),
             "tradingSymbol": order_req.trading_symbol,
             "quantity": int(order_req.quantity),
-            "price": float(order_req.price)
+            "price": float(order_req.price),
         }
+
+        # Include triggerPrice for SL order types
+        if order_req.order_type.upper() in ("STOP_LOSS", "STOP_LOSS_MARKET"):
+            payload["triggerPrice"] = float(order_req.trigger_price)
 
         data = await dhan_http_client._request(
             method="POST",
