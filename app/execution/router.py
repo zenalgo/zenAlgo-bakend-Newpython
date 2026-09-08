@@ -32,6 +32,67 @@ router = APIRouter(prefix="/api/v1/admin/execution", tags=["Admin Execution & Us
 
 
 @router.get(
+    "/logs",
+    response_model=ApiResponse[List[StrategyExecutionBatchResponse]],
+    summary="Get all execution logs across all strategies (full audit trail)"
+)
+async def get_all_execution_logs(
+    request: Request,
+    trading_date: Optional[date] = Query(None, description="Filter by trading date (YYYY-MM-DD)"),
+    strategy_id: Optional[int] = Query(None, alias="strategyId"),
+    status_filter: Optional[str] = Query(None, alias="status", description="PROCESSING, COMPLETED, COMPLETED_WITH_ERRORS"),
+    page: int = Query(0, ge=0),
+    size: int = Query(30, ge=1, le=100),
+    current_admin=Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns paginated execution batch logs across ALL strategies.
+    Powers the 'Execution Logs' admin view with full audit trail.
+    """
+    query = select(StrategyExecutionBatch)
+    if trading_date:
+        query = query.where(StrategyExecutionBatch.trading_date == trading_date)
+    if strategy_id:
+        query = query.where(StrategyExecutionBatch.strategy_id == strategy_id)
+    if status_filter:
+        query = query.where(StrategyExecutionBatch.status == status_filter.upper())
+
+    query = query.order_by(StrategyExecutionBatch.id.desc()).offset(page * size).limit(size)
+    res = await db.execute(query)
+    batches = list(res.scalars().all())
+
+    data = [
+        StrategyExecutionBatchResponse(
+            batchId=b.id,
+            signalId=b.signal_id,
+            strategyId=b.strategy_id,
+            strategyVersionId=b.strategy_version_id,
+            tradingDate=b.trading_date,
+            totalUsers=b.total_users,
+            eligibleUsers=b.eligible_users,
+            rejectedUsers=b.rejected_users,
+            executionStartedUsers=b.execution_started_users,
+            successfulUsers=b.successful_users,
+            failedUsers=b.failed_users,
+            notExecutedUsers=b.not_executed_users,
+            status=b.status,
+            createdAt=b.created_at,
+            completedAt=b.completed_at,
+        )
+        for b in batches
+    ]
+
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    return ApiResponse(
+        success=True,
+        message="Execution logs retrieved",
+        data=data,
+        requestId=request_id,
+    )
+
+
+@router.get(
     "/strategies/{strategy_id}/batches",
     response_model=ApiResponse[List[StrategyExecutionBatchResponse]],
     summary="Get execution batches for a strategy (Track how many users executed)"

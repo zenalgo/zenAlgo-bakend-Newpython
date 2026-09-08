@@ -15,6 +15,10 @@ import { WalletPage } from './components/wallets/WalletPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
 import { BrokerSettingsPage } from './components/brokers/BrokerSettingsPage';
 import { SimulateExecutionModal } from './components/common/SimulateExecutionModal';
+import { ExecutionLogsPage } from './components/execution/ExecutionLogsPage';
+import { ConnectedBrokersPage } from './components/brokers/ConnectedBrokersPage';
+import { ReportsPage } from './components/reports/ReportsPage';
+import { CalculationEnginePage } from './components/calculation-engine/CalculationEnginePage';
 
 export const App = () => {
   const { isAuthenticated } = useAuth();
@@ -72,6 +76,14 @@ export const App = () => {
         return <UserManagementPage />;
       case 'brokers':
         return <BrokerSettingsPage />;
+      case 'execution-logs':
+        return <ExecutionLogsPage />;
+      case 'connected-brokers':
+        return <ConnectedBrokersPage />;
+      case 'reports':
+        return <ReportsPage />;
+      case 'calc-engine':
+        return <CalculationEnginePage />;
       default:
         return <DashboardPage onNavigate={setCurrentTab} />;
     }

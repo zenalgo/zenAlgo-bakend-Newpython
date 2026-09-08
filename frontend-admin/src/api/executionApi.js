@@ -26,4 +26,32 @@ export const executionApi = {
 
   simulateExecution: (strategyId) =>
     axiosClient.post(`/admin/execution/strategies/${strategyId}/simulate-execution`),
+
+  // --- Execution Logs (All Strategies) ---
+  getAllExecutionLogs: (params) =>
+    axiosClient.get('/admin/execution/logs', { params }),
+};
+
+// --- Connected Broker Users ---
+export const brokerConnectionsApi = {
+  getStats: () =>
+    axiosClient.get('/admin/broker-connections/stats'),
+
+  listConnectedUsers: (params) =>
+    axiosClient.get('/admin/broker-connections', { params }),
+};
+
+// --- Reports ---
+export const reportsApi = {
+  getSummary: (days) =>
+    axiosClient.get('/admin/reports/summary', { params: { days } }),
+
+  getExecutionSummary: (days) =>
+    axiosClient.get('/admin/reports/execution-summary', { params: { days } }),
+
+  getDailyActivity: (days) =>
+    axiosClient.get('/admin/reports/daily', { params: { days } }),
+
+  getUserPerformance: (days, params) =>
+    axiosClient.get('/admin/reports/user-performance', { params: { days, ...params } }),
 };

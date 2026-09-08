@@ -1,5 +1,5 @@
 import uuid
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
@@ -24,6 +24,9 @@ from app.execution.router import router as execution_router, trader_exec_router
 from app.partners.router import router as partners_router
 from app.instruments.router import router as instruments_router
 from app.instruments.service import seed_instruments_if_empty
+from app.admin.connected_users_router import router as admin_broker_users_router
+from app.admin.reports_router import router as admin_reports_router
+from app.calculation_engine.router import router as calc_engine_router
 
 app = FastAPI(
     title="ZenAlgo Platform Backend",
@@ -94,10 +97,25 @@ app.include_router(trader_exec_router)
 app.include_router(partners_router, prefix="/api/v1")
 app.include_router(instruments_router, prefix="/api/v1")
 app.include_router(ws_router)
+app.include_router(calc_engine_router, prefix="/api/v1")
+app.include_router(admin_broker_users_router)
+app.include_router(admin_reports_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {"status": "healthy", "service": "zenalgo-backend"}
+
+@app.websocket("/ws/calc-engine")
+async def ws_calc_engine_root(websocket: WebSocket):
+    from app.calculation_engine.registry import CalcEngineWSManager
+    await CalcEngineWSManager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except Exception:
+        CalcEngineWSManager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn

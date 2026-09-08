@@ -11,21 +11,29 @@ import {
   ShieldCheck,
   Building2,
   CheckCircle2,
+  ScrollText,
+  Link2,
+  BarChart3,
+  Activity,
 } from 'lucide-react';
 
 export const Sidebar = ({ currentTab, onSelectTab }) => {
   const navItems = [
     { id: 'dashboard', label: 'Platform Overview', icon: LayoutDashboard },
+    { id: 'calc-engine', label: 'Calculation Engine', icon: Activity, badge: 'Live' },
     { id: 'strategies', label: 'Strategy Management', icon: Zap },
     { id: 'builder', label: 'Strategy Builder & AI', icon: Cpu },
     { id: 'placed-orders', label: 'Placed Orders & Positions', icon: Package, badge: 'Live' },
     { id: 'batches', label: 'Copy-Trading Auditing', icon: Layers },
-    { id: 'approvals', label: 'Plan UTR Approvals & Wallet', icon: CheckCircle2, badge: 'New' },
+    { id: 'execution-logs', label: 'Execution Logs', icon: ScrollText, badge: 'New' },
+    { id: 'approvals', label: 'Plan UTR Approvals & Wallet', icon: CheckCircle2 },
     { id: 'payment-settings', label: 'Bank & UPI Settings', icon: Building2 },
     { id: 'plans', label: 'Subscription Plans', icon: CreditCard },
     { id: 'wallets', label: 'Wallets & Ledger', icon: Wallet },
     { id: 'users', label: 'User Directory', icon: Users },
     { id: 'brokers', label: 'Broker Accounts', icon: ShieldCheck },
+    { id: 'connected-brokers', label: 'Connected Brokers', icon: Link2, badge: 'New' },
+    { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, badge: 'New' },
   ];
 
   return (
