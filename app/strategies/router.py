@@ -712,6 +712,14 @@ async def evaluate_strategy_exit_endpoint(
         db.add(strat)
         await db.commit()
 
+        if strat.mode == "LIVE":
+            try:
+                from app.execution import service as exec_service
+                import asyncio
+                asyncio.create_task(exec_service.exit_all_positions(db, id))
+            except Exception as sq_err:
+                logger.error(f"Failed to dispatch live broker exit for Strategy #{id}: {sq_err}")
+
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(
         success=True,
@@ -768,6 +776,15 @@ async def squareoff_strategy_endpoint(
         db.add(ex)
 
     await db.commit()
+
+    if strat.mode == "LIVE":
+        try:
+            from app.execution import service as exec_service
+            import asyncio
+            asyncio.create_task(exec_service.exit_all_positions(db, id))
+        except Exception as sq_err:
+            logger.error(f"Failed to dispatch live broker exit for Strategy #{id}: {sq_err}")
+
     strat_dto = await build_strategy_response(db, strat)
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     return ApiResponse(

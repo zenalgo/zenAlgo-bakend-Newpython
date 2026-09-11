@@ -72,10 +72,7 @@ async def on_startup():
     await redis_manager.init_redis()
     asyncio.create_task(order_reconciliation_worker.start())
     try:
-        from app.core.database import AsyncSessionLocal, engine, Base
-        import app.core.settings_model
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as session:
             await seed_instruments_if_empty(session)
     except Exception as e:

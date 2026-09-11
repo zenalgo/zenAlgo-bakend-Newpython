@@ -430,13 +430,6 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                 for leg in version.legs:
                     resolved = InstrumentResolver.resolve_leg_instrument(version.underlying, leg)
                     calculated_qty = leg.lots * resolved.lot_size
-                    # Ensure individual leg quantity stays strictly under Admin Safety Cap
-                    if strategy.mode != "PAPER" and leg.strike_value and leg.strike_value > 0:
-                        leg_val = Decimal(str(leg.strike_value)) * Decimal(str(calculated_qty))
-                        if leg_val > max_order_cap:
-                            max_qty = int(max_order_cap // Decimal(str(leg.strike_value)))
-                            if max_qty >= 1:
-                                calculated_qty = max_qty
                     leg_cid = f"{correlation_id}-LEG-{leg.sequence}"
 
                     exec_leg = StrategyExecutionLeg(

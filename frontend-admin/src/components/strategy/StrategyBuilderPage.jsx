@@ -309,15 +309,31 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
     updateStrat({ exitConditions: cur });
   };
 
-  // Save / Update Strategy to Backend
-  const handleSaveOrUpdateStrategy = async () => {
+  const resolveLegLotsAndQty = (l, underlying) => {
+    const rawQty = parseInt(l.quantity || 50, 10);
+    const und = (underlying || 'NIFTY').toUpperCase();
+    const isEquity = ['TATAGOLD', 'IDEA', 'MAHABANK', 'IOC', 'TATASTEEL', 'RELIANCE', 'HDFCBANK', 'SUZLON'].some((s) => und.includes(s)) || l.segment === 'EQ' || l.segment === 'EQUITY';
+    let lotSize = 25;
+    if (isEquity) lotSize = 1;
+    else if (und.includes('BANKNIFTY')) lotSize = 15;
+    else if (und.includes('FINNIFTY')) lotSize = 25;
+    else if (und.includes('NIFTY')) lotSize = 25;
+
+    const lots = Math.max(1, Math.round(rawQty / lotSize));
+    const finalQty = lotSize === 1 ? rawQty : lots * lotSize;
+    return { lots, quantity: finalQty };
+  };
+
+  const handleSubmit = async (e) => {
+    if (e) e.preventDefault();
     setLoading(true);
+
     let finalPayload;
     if (activeTab === 'JSON') {
       try {
         finalPayload = JSON.parse(jsonText);
       } catch (err) {
-        addToast('Invalid JSON structure. Please check syntax.', 'error');
+        addToast('Invalid JSON structure: ' + err.message, 'error');
         setLoading(false);
         return;
       }
@@ -327,8 +343,8 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         description: stratState.description,
         underlying: stratState.underlying || 'NIFTY 50',
         timeframe: stratState.entryTimeframe || '5m',
-        mode: stratState.mode || tradingMode || 'PAPER',
-        status: stratState.status || (stratState.mode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
+        mode: stratState.mode || tradingMode || 'LIVE',
+        status: stratState.status || ((stratState.mode || tradingMode) === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
         entrySetting: {
           entryType: 'INTRADAY',
           entryTime: '09:15',
@@ -341,19 +357,22 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         },
         entryConditions: (stratState.entryConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
         exitConditions: (stratState.exitConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
-        legs: (stratState.config?.options?.legs || []).map((l, idx) => ({
-          sequence: idx + 1,
-          segment: 'OPT',
-          expiry: 'WEEKLY',
-          lots: 1,
-          instrumentType: 'OPT',
-          side: l.action || 'BUY',
-          positionType: l.type === 'CE' ? 'CALL' : 'PUT',
-          strikeSelection: l.strike || 'ATM',
-          quantity: parseInt(l.quantity || 50),
-          stopLossPoints: 30.0,
-          targetPoints: 60.0,
-        })),
+        legs: (stratState.config?.options?.legs || []).map((l, idx) => {
+          const { lots, quantity } = resolveLegLotsAndQty(l, stratState.underlying);
+          return {
+            sequence: idx + 1,
+            segment: l.segment || 'OPT',
+            expiry: l.expiry || 'WEEKLY',
+            lots: lots,
+            quantity: quantity,
+            instrumentType: l.segment || 'OPT',
+            side: l.action || 'BUY',
+            positionType: l.type === 'CE' ? 'CALL' : 'PUT',
+            strikeSelection: l.strike || 'ATM',
+            stopLossPoints: 30.0,
+            targetPoints: 60.0,
+          };
+        }),
       };
     }
 
@@ -374,14 +393,14 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
     }
   };
 
-  const handleSaveAndDeploy = async () => {
+  const handleQuickSaveAndDeploy = async () => {
     setLoading(true);
     let finalPayload;
     if (activeTab === 'JSON') {
       try {
         finalPayload = JSON.parse(jsonText);
       } catch (err) {
-        addToast('Invalid JSON structure. Please check syntax.', 'error');
+        addToast('Invalid JSON structure: ' + err.message, 'error');
         setLoading(false);
         return;
       }
@@ -391,8 +410,8 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         description: stratState.description,
         underlying: stratState.underlying || 'NIFTY 50',
         timeframe: stratState.entryTimeframe || '5m',
-        mode: stratState.mode || tradingMode || 'PAPER',
-        status: stratState.status || (stratState.mode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
+        mode: stratState.mode || tradingMode || 'LIVE',
+        status: stratState.status || ((stratState.mode || tradingMode) === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
         entrySetting: {
           entryType: 'INTRADAY',
           entryTime: '09:15',
@@ -405,19 +424,22 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         },
         entryConditions: (stratState.entryConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
         exitConditions: (stratState.exitConditions || []).map((r) => ({ rawText: typeof r === 'string' ? r : r.rawText })),
-        legs: (stratState.config?.options?.legs || []).map((l, idx) => ({
-          sequence: idx + 1,
-          segment: 'OPT',
-          expiry: 'WEEKLY',
-          lots: 1,
-          instrumentType: 'OPT',
-          side: l.action || 'BUY',
-          positionType: l.type === 'CE' ? 'CALL' : 'PUT',
-          strikeSelection: l.strike || 'ATM',
-          quantity: parseInt(l.quantity || 50),
-          stopLossPoints: 30.0,
-          targetPoints: 60.0,
-        })),
+        legs: (stratState.config?.options?.legs || []).map((l, idx) => {
+          const { lots, quantity } = resolveLegLotsAndQty(l, stratState.underlying);
+          return {
+            sequence: idx + 1,
+            segment: l.segment || 'OPT',
+            expiry: l.expiry || 'WEEKLY',
+            lots: lots,
+            quantity: quantity,
+            instrumentType: l.segment || 'OPT',
+            side: l.action || 'BUY',
+            positionType: l.type === 'CE' ? 'CALL' : 'PUT',
+            strikeSelection: l.strike || 'ATM',
+            stopLossPoints: 30.0,
+            targetPoints: 60.0,
+          };
+        }),
       };
     }
 
@@ -443,7 +465,7 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
       if (onClearEditing) onClearEditing();
       if (onNavigate) onNavigate('strategies');
     } catch (err) {
-      addToast(err.message || 'Failed to save and deploy', 'error');
+      addToast(err.message || 'Failed to deploy strategy', 'error');
     } finally {
       setLoading(false);
     }

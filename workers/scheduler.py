@@ -235,6 +235,13 @@ async def check_and_execute_live_exits() -> None:
                     strat.status = "SQUARED_OFF"
                     db.add(strat)
                     logger.info(f"Live exit executed for Strategy #{strat.id}: {exit_reason}")
+                    if strat.mode == "LIVE":
+                        try:
+                            from app.execution import service as exec_service
+                            asyncio.create_task(exec_service.exit_all_positions(db, strat.id))
+                            logger.info(f"Dispatched live broker square-off for Strategy #{strat.id}")
+                        except Exception as sq_err:
+                            logger.error(f"Failed to dispatch live broker exit for Strategy #{strat.id}: {sq_err}")
 
             await db.commit()
         except Exception as ex:

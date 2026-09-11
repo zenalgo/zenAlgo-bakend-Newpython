@@ -38,9 +38,20 @@ class StrategyLegRequest(BaseModel):
             data["segment"] = data.get("instrumentType") or "OPT"
         if "expiry" not in data or not data["expiry"]:
             data["expiry"] = "WEEKLY"
-        if "lots" not in data or not data["lots"]:
-            qty = data.get("quantity") or 50
-            data["lots"] = max(1, int(qty) // 50) if int(qty) >= 50 else 1
+        qty = data.get("quantity")
+        seg = str(data.get("segment") or data.get("instrumentType") or "OPT").upper()
+        if qty is not None:
+            qty_val = int(qty)
+            if seg in ["EQ", "EQUITY"]:
+                data["lots"] = max(1, qty_val)
+            elif "lots" not in data or not data["lots"] or data["lots"] == 1:
+                # Lot size for NIFTY / FINNIFTY is 25, BANKNIFTY is 15
+                if qty_val % 15 == 0 and qty_val % 25 != 0:
+                    data["lots"] = max(1, qty_val // 15)
+                else:
+                    data["lots"] = max(1, round(qty_val / 25)) if qty_val >= 25 else 1
+        elif "lots" not in data or not data["lots"]:
+            data["lots"] = 1
         if "strikeSelection" not in data and "strike" in data:
             data["strikeSelection"] = data["strike"]
         if "side" not in data and "action" in data:

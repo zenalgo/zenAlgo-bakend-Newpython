@@ -13,6 +13,8 @@ import app.subscriptions.models
 import app.strategies.models
 import app.execution.models
 import app.brokers.models
+import app.core.settings_model
+import app.instruments.models
 
 from app.main import app as fastapi_app
 from app.core.config import settings
@@ -45,9 +47,6 @@ def event_loop():
 
 @pytest.fixture(autouse=False, scope="function")
 async def clean_db():
-    """Ensures tables exist and cleans up database tables in topological order before each test run."""
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     """Cleans up all database tables in topological order before each test run."""
     async def do_clean(conn):
         for table in reversed(Base.metadata.sorted_tables):
