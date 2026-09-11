@@ -4,10 +4,12 @@ import { Sparkles, Bot, Key, CheckCircle2, AlertTriangle, XCircle, Play, Save, E
 import { strategyApi } from '../../api/strategyApi';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { useTradingMode } from '../../context/TradingModeContext';
 
 export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, onAutoFillBuilder }) => {
   const { user } = useAuth();
   const { addToast } = useToast();
+  const { tradingMode } = useTradingMode();
 
   const [provider, setProvider] = useState('OPENAI'); // 'OPENAI' | 'GEMINI' | 'CLAUDE'
   const [apiKey, setApiKey] = useState('');
@@ -83,7 +85,8 @@ export const AIStrategyGeneratorModal = ({ isOpen, onClose, onStrategyCreated, o
         description: generatedStrategy.description || 'AI-generated quantitative strategy',
         underlying: generatedStrategy.underlying || 'NIFTY',
         timeframe: generatedStrategy.timeframe || '5m',
-        mode: generatedStrategy.mode || 'PAPER',
+        mode: generatedStrategy.mode || tradingMode || 'PAPER',
+        status: (generatedStrategy.mode || tradingMode) === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT',
         entrySetting: {
           entryType: 'INTRADAY',
           entryTime: '09:15',

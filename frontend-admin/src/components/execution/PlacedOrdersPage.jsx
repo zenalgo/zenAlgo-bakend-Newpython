@@ -5,9 +5,11 @@ import { executionApi } from '../../api/executionApi';
 import { strategyApi } from '../../api/strategyApi';
 import { Pagination } from '../common/Pagination';
 import { useToast } from '../../context/ToastContext';
+import { useTradingMode } from '../../context/TradingModeContext';
 
 export const PlacedOrdersPage = ({ selectedStrategyId }) => {
   const { addToast } = useToast();
+  const { tradingMode, isLive } = useTradingMode();
   const [strategies, setStrategies] = useState([]);
   const [currentStrategyId, setCurrentStrategyId] = useState(selectedStrategyId || '');
   const [placedOrders, setPlacedOrders] = useState([]);
@@ -27,14 +29,25 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
   }, [selectedStrategyId]);
 
   useEffect(() => {
-    strategyApi.getStrategies().then((res) => {
+    strategyApi.getStrategies({ mode: tradingMode }).then((res) => {
       const list = res.data || [];
       setStrategies(list);
-      if (!currentStrategyId && !selectedStrategyId && list.length > 0) {
-        setCurrentStrategyId(list[0].id);
+      if (list.length > 0) {
+        if (!currentStrategyId || !list.some((s) => s.id === currentStrategyId)) {
+          setCurrentStrategyId(list[0].id);
+        }
+      } else {
+        // Fallback to all strategies if no strategies exist for this mode
+        strategyApi.getStrategies().then((allRes) => {
+          const allList = allRes.data || [];
+          setStrategies(allList);
+          if (allList.length > 0 && (!currentStrategyId || !allList.some((s) => s.id === currentStrategyId))) {
+            setCurrentStrategyId(allList[0].id);
+          }
+        });
       }
     });
-  }, []);
+  }, [tradingMode]);
 
   const loadOrders = async () => {
     if (!currentStrategyId) return;
@@ -108,7 +121,30 @@ export const PlacedOrdersPage = ({ selectedStrategyId }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Placed Orders & Open Paper Positions</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>Placed Orders & Positions</h1>
+            <span style={{
+              fontSize: '0.75rem',
+              fontWeight: 800,
+              padding: '3px 10px',
+              borderRadius: '20px',
+              background: isLive ? 'rgba(239, 68, 68, 0.15)' : 'rgba(56, 189, 248, 0.15)',
+              color: isLive ? 'var(--accent-rose)' : 'var(--accent-cyan)',
+              border: isLive ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(56, 189, 248, 0.4)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <span style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: isLive ? '#ef4444' : '#38bdf8',
+                animation: 'pulse 1.5s infinite'
+              }} />
+              {isLive ? 'LIVE BROKER GATEWAY' : 'PAPER SIMULATION'}
+            </span>
+          </div>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Real-time execution ledger, contract legs, fill prices, and live PnL.</p>
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>

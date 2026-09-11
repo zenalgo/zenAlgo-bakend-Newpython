@@ -65,7 +65,14 @@ async def check_strategy_eligibility(db: AsyncSession, user_id: int, strategy_id
     res_access = await db.execute(stmt_access)
     access = res_access.scalar_one_or_none()
     if not access:
-        return build_rejection("PLAN_DOES_NOT_ALLOW_STRATEGY", plan.code)
+        # Check if specific restrictions are defined for this strategy
+        stmt_any_strat_access = select(PlanStrategyAccess).where(
+            PlanStrategyAccess.strategy_id == strategy_id
+        )
+        res_any = await db.execute(stmt_any_strat_access)
+        has_restrictions = len(res_any.scalars().all()) > 0
+        if has_restrictions and plan.code not in ("PRO", "PREMIUM"):
+            return build_rejection("PLAN_DOES_NOT_ALLOW_STRATEGY", plan.code)
 
     # 2. Wallet Check - BYPASSED (Always Eligible)
     # (Matches commented logic in Spring Boot)

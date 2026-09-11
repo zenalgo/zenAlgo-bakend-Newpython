@@ -210,6 +210,7 @@ class StrategyRequest(BaseModel):
     capital: Optional[Decimal] = None
     tradingType: Optional[str] = "INTRADAY"
     mode: Optional[str] = "PAPER"
+    status: Optional[str] = None
     legs: Optional[List[StrategyLegRequest]] = None
     entrySetting: Optional[StrategyEntrySettingRequest] = None
     entryDays: Optional[List[str]] = None
@@ -304,6 +305,18 @@ class StrategyRequest(BaseModel):
             data["entrySetting"] = {"entryTime": "09:15", "entryType": "INTRADAY", "reEntryLimit": 3}
         if "exitSetting" not in data or not data["exitSetting"]:
             data["exitSetting"] = {"exitTime": "15:15", "exitType": "TIME_BASED"}
+
+        # 9. Mode & Status normalization
+        raw_mode = data.get("mode")
+        raw_status = data.get("status")
+        if raw_mode:
+            data["mode"] = str(raw_mode).upper().strip()
+        if raw_status:
+            data["status"] = str(raw_status).upper().strip()
+        elif raw_mode and str(raw_mode).upper().strip() == "LIVE":
+            data["status"] = "ACTIVE_LIVE"
+        elif "meta" in data and isinstance(data["meta"], dict) and data["meta"].get("status"):
+            data["status"] = str(data["meta"]["status"]).upper().strip()
 
         return data
 

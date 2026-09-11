@@ -1,13 +1,18 @@
+import re
+import json
+import logging
+import datetime
+from datetime import datetime as dt_cls, timezone
+from typing import List, Optional, Union
+from decimal import Decimal
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, exists
-from typing import List, Optional, Union
-from decimal import Decimal
-import json
-import datetime
-from datetime import datetime as dt_cls, timezone
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm import selectinload
+
+logger = logging.getLogger(__name__)
 
 from app.users.models import User
 from app.strategies.models import (
@@ -213,23 +218,39 @@ def load_builder_fields(strategy: Strategy) -> dict:
 
 async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> StrategyResponse:
     """Loads active version and formats response JSON."""
-    stmt = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
-    res = await db.execute(stmt)
-    version = res.scalar_one_or_none()
+    version = None
+    if strategy.current_version_id:
+        stmt = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
+        res = await db.execute(stmt)
+        version = res.scalar_one_or_none()
 
     if not version:
-        # Default fallback
+        stmt_latest = select(StrategyVersion).where(StrategyVersion.strategy_id == strategy.id).order_by(StrategyVersion.version_number.desc()).limit(1)
+        res_latest = await db.execute(stmt_latest)
+        version = res_latest.scalar_one_or_none()
+        if version and strategy.current_version_id != version.id:
+            strategy.current_version_id = version.id
+            db.add(strategy)
+
+    if not version:
+        # Default fallback if no version exists
+        builder = load_builder_fields(strategy)
+        fallback_underlying = "NIFTY"
+        if builder.get("instrument") and getattr(builder["instrument"], "underlying", None):
+            fallback_underlying = builder["instrument"].underlying
+
         return StrategyResponse(
+            schemaVersion=builder.get("schemaVersion", "2.0.0"),
             id=strategy.id,
             userId=strategy.user_id,
             name=strategy.name,
-            description=strategy.description,
+            description=strategy.description or "",
             status=strategy.status,
             mode=strategy.mode,
             currentVersionId=None,
             versionNumber=1,
-            underlying=strategy.underlying,
-            capital=Decimal("100000.00"),
+            underlying=fallback_underlying,
+            capital=strategy.allocated_capital or Decimal("100000.00"),
             tradingType="INTRADAY",
             legs=[],
             entrySetting=StrategyEntrySettingResponse(entryTime="09:15"),
@@ -243,7 +264,28 @@ async def build_strategy_response(db: AsyncSession, strategy: Strategy) -> Strat
                 exitOnExpiry=True,
                 exitAfterEntryType="NONE",
                 exitAfterEntryValue=None
-            )
+            ),
+            meta=builder.get("meta"),
+            youtubeUrl=builder.get("youtubeUrl"),
+            coreIdea=builder.get("coreIdea"),
+            category=builder.get("category"),
+            marketBias=builder.get("marketBias"),
+            timeframe=builder.get("timeframe"),
+            instrument=builder.get("instrument"),
+            schedule=builder.get("schedule"),
+            entryConditions=builder.get("entryConditions"),
+            exitConditions=builder.get("exitConditions"),
+            goldenRules=builder.get("goldenRules"),
+            keyRememberPoints=builder.get("keyRememberPoints"),
+            riskManagement=builder.get("riskManagement"),
+            target=builder.get("target"),
+            options=builder.get("options"),
+            execution=builder.get("execution"),
+            pivotConfiguration=builder.get("pivotConfiguration"),
+            eventExclusion=builder.get("eventExclusion"),
+            tradingHorizon=builder.get("tradingHorizon", "Intraday"),
+            scriptExecutionPayload=builder.get("scriptExecutionPayload"),
+            latestExecution=None
         )
 
     # Load version relations
@@ -632,6 +674,20 @@ def map_request_from_builder(request: StrategyRequest) -> StrategyRequest:
                     lots=1
                 )
             ]
+
+    # Mode & Status normalization
+    if hasattr(request, "status") and request.status:
+        request.status = str(request.status).upper().strip()
+    elif request.meta and getattr(request.meta, "status", None):
+        request.status = str(request.meta.status).upper().strip()
+    elif (getattr(request, "mode", None) or "").upper().strip() == "LIVE":
+        request.status = "ACTIVE_LIVE"
+
+    if hasattr(request, "mode") and request.mode:
+        request.mode = str(request.mode).upper().strip()
+    if getattr(request, "status", None) == "ACTIVE_LIVE":
+        request.mode = "LIVE"
+
     return request
 
 async def populate_version_relations(db: AsyncSession, version: StrategyVersion, request: StrategyRequest) -> StrategyVersion:
@@ -791,6 +847,23 @@ async def create_version(db: AsyncSession, strategy: Strategy, request: Strategy
     await db.flush()
     return await populate_version_relations(db, version, request)
 
+async def auto_grant_plan_access(db: AsyncSession, strategy_id: int) -> None:
+    """Auto-grants strategy access to active plans so new strategies are immediately accessible."""
+    try:
+        from app.subscriptions.models import Plan, PlanStrategyAccess
+        active_plans_res = await db.execute(select(Plan).where(Plan.is_active == True))
+        for p in active_plans_res.scalars().all():
+            check_stmt = select(PlanStrategyAccess).where(
+                PlanStrategyAccess.plan_id == p.id,
+                PlanStrategyAccess.strategy_id == strategy_id
+            )
+            existing_psa = (await db.execute(check_stmt)).scalar_one_or_none()
+            if not existing_psa:
+                db.add(PlanStrategyAccess(plan_id=p.id, strategy_id=strategy_id, is_enabled=True))
+        await db.flush()
+    except Exception as e:
+        logger.warning(f"Failed to auto-grant plan access for strategy {strategy_id}: {e}")
+
 class StrategyService:
     @staticmethod
     async def create_strategy(db: AsyncSession, request: StrategyRequest, user_id: int) -> StrategyResponse:
@@ -815,14 +888,22 @@ class StrategyService:
             raise ResourceNotFoundError("User not found")
 
         status_val = "DRAFT"
-        if request.meta and request.meta.status:
+        if getattr(request, "status", None):
+            status_val = request.status.upper().strip()
+        elif request.meta and getattr(request.meta, "status", None):
             status_val = request.meta.status.upper().strip()
+        elif (request.mode or "").upper().strip() == "LIVE":
+            status_val = "ACTIVE_LIVE"
+
+        mode_val = (request.mode or "PAPER").upper().strip()
+        if status_val == "ACTIVE_LIVE":
+            mode_val = "LIVE"
 
         strategy = Strategy(
             user_id=user_id,
             name=request.name.strip(),
             description=request.description or "",
-            mode=request.mode.upper().strip(),
+            mode=mode_val,
             status=status_val,
             created_by=user.email,
             is_prebuilt=False,
@@ -836,6 +917,9 @@ class StrategyService:
         strategy.current_version_id = version.id
         db.add(strategy)
         await db.flush()
+
+        # Auto-grant access to active plans
+        await auto_grant_plan_access(db, strategy.id)
 
         # Initialize StrategyRuntimeState in WAITING lifecycle state
         await StrategyStateManager.initialize_runtime_state(
@@ -870,9 +954,19 @@ class StrategyService:
 
         strategy.name = request.name.strip()
         strategy.description = request.description or ""
-        strategy.mode = request.mode.upper().strip()
-        if request.meta and request.meta.status:
+        mode_val = (request.mode or strategy.mode or "PAPER").upper().strip()
+        if getattr(request, "status", None):
+            strategy.status = request.status.upper().strip()
+        elif request.meta and getattr(request.meta, "status", None):
             strategy.status = request.meta.status.upper().strip()
+        elif mode_val == "LIVE" and strategy.status in ("DRAFT", "PAPER"):
+            strategy.status = "ACTIVE_LIVE"
+        elif mode_val == "PAPER" and strategy.status == "ACTIVE_LIVE":
+            strategy.status = "PAPER"
+
+        if strategy.status == "ACTIVE_LIVE":
+            mode_val = "LIVE"
+        strategy.mode = mode_val
         strategy.parameters = serialize_builder_fields(request)
 
         stmt_version = select(StrategyVersion).where(StrategyVersion.id == strategy.current_version_id)
@@ -913,6 +1007,9 @@ class StrategyService:
 
         db.add(strategy)
         await db.flush()
+
+        # Auto-grant access to active plans
+        await auto_grant_plan_access(db, strategy.id)
 
         return await build_strategy_response(db, strategy)
 
@@ -966,6 +1063,12 @@ class StrategyService:
             raise ValidationError(f"Invalid strategy status transition state: {status_str}")
 
         strategy.status = trans
+        if trans == "ACTIVE_LIVE":
+            strategy.mode = "LIVE"
+            strategy.is_active = True
+        elif trans == "PAPER":
+            strategy.mode = "PAPER"
+            strategy.is_active = True
         db.add(strategy)
         await db.flush()
         return await build_strategy_response(db, strategy)

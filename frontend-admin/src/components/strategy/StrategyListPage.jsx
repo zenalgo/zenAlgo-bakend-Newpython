@@ -7,10 +7,12 @@ import { Pagination } from '../common/Pagination';
 import { AIStrategyGeneratorModal } from './AIStrategyGeneratorModal';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { useTradingMode } from '../../context/TradingModeContext';
 
 export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNavigateToBatches }) => {
   const { user } = useAuth();
   const { addToast } = useToast();
+  const { tradingMode, isLive, isPaper } = useTradingMode();
   const [strategies, setStrategies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
@@ -29,11 +31,18 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
 
   // Filters & Pagination
   const [search, setSearch] = useState('');
-  const [modeFilter, setModeFilter] = useState('ALL');
+  const [modeFilter, setModeFilter] = useState(() => tradingMode || 'ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(6);
   const [openSteps, setOpenSteps] = useState({});
+
+  useEffect(() => {
+    if (tradingMode) {
+      setModeFilter(tradingMode);
+      setPage(0);
+    }
+  }, [tradingMode]);
 
   const toggleSteps = (key) => {
     setOpenSteps((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -101,15 +110,15 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
     window.dispatchEvent(new Event('zenalgo_favorites_updated'));
   };
 
-  const handleDeploy = async (id, mode = 'PAPER') => {
+  const handleDeploy = async (id, targetMode = tradingMode || 'PAPER') => {
     setActionLoading(id);
     try {
-      if (mode === 'PAPER') {
+      if (targetMode === 'LIVE') {
+        await strategyApi.activateLive(id);
+        addToast(`⚡ Strategy #${id} deployed to LIVE BROKER!`, 'warning');
+      } else {
         await strategyApi.activatePaper(id);
         addToast(`Strategy #${id} deployed in PAPER trading mode!`, 'success');
-      } else {
-        await strategyApi.activateLive(id);
-        addToast(`Strategy #${id} deployed to LIVE BROKER!`, 'warning');
       }
       loadStrategies();
     } catch (err) {
@@ -651,13 +660,23 @@ export const StrategyListPage = ({ onNavigateToBuilder, onNavigateToOrders, onNa
                       <span>⚡ 5m Paper Trade</span>
                     </button>
                     <button
-                      onClick={() => handleDeploy(s.id, 'PAPER')}
+                      onClick={() => handleDeploy(s.id, (s.mode === 'LIVE' || isLive) ? 'LIVE' : 'PAPER')}
                       disabled={actionLoading === s.id}
-                      className="btn btn-primary"
-                      style={{ padding: '8px', fontSize: '0.8rem', justifyContent: 'center' }}
+                      className={`btn ${(s.mode === 'LIVE' || isLive) ? 'btn-danger' : 'btn-primary'}`}
+                      style={{
+                        padding: '8px',
+                        fontSize: '0.8rem',
+                        justifyContent: 'center',
+                        ...((s.mode === 'LIVE' || isLive) ? {
+                          background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                          border: 'none',
+                          color: '#fff',
+                          boxShadow: '0 0 10px rgba(239, 68, 68, 0.4)'
+                        } : {})
+                      }}
                     >
                       <Play size={14} />
-                      <span>Deploy Paper</span>
+                      <span>{(s.mode === 'LIVE' || isLive) ? '⚡ Deploy Live' : 'Deploy Paper'}</span>
                     </button>
                   </div>
 

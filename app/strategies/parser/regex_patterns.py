@@ -6,41 +6,49 @@ TF_SUFFIX = r"(?:\s+on\s+([135mhd0-9]+)(?:\s+candle|\s+chart|\s+timeframe)?)?"
 # evaluation type: candle close
 CANDLE_CLOSE_PAT = r"(?:\s+evaluated\s+at\s+candle\s+close)?"
 
-# 1. Indicator-to-Indicator crossover (e.g., "9 EMA crosses above 21 EMA")
+# 1. Indicator-to-Indicator crossover (e.g., "9 EMA crosses above 21 EMA", "EMA(8) crosses below EMA(33)")
 IND_IND_CROSS = re.compile(
-    r"^(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:\((\d+)\))?\s+"
+    r"^(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:[\s\(]+(\d+)\)?)?\s+"
     r"(crosses\s+above|crosses\s+below|crosses|crossover\s+above|crossover\s+below)\s+"
-    r"(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:\((\d+)\))?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
+    r"(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:[\s\(]+(\d+)\)?)?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
+    re.IGNORECASE
+)
+
+# 1b. Indicator-to-Indicator comparison (e.g., "EMA 8 > EMA 33", "8 EMA above 33 EMA", "EMA(8) >= EMA(33)")
+IND_IND_COMP = re.compile(
+    r"^(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:[\s\(]+(\d+)\)?)?\s+"
+    r"(above|below|is\s+above|is\s+below|greater\s+than|less\s+than|<=|>=|<|>|==|=)\s+"
+    r"(?:(\d+)\s+)?(EMA|SMA|VWAP|RSI)(?:[\s\(]+(\d+)\)?)?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
     re.IGNORECASE
 )
 
 # 2. Indicator to Constant comparison (e.g., "RSI above 60", "VIX < 11.5")
 IND_CONST_COMP = re.compile(
-    r"^(EMA|SMA|VWAP|RSI|VIX)(?:\((\d+)\))?\s+"
-    r"(above|below|is\s+above|is\s+below|greater\s+than|less\s+than|<=|>=|<|>)\s+"
+    r"^(EMA|SMA|VWAP|RSI|VIX)(?:[\s\(]+(\d+)\)?)?\s+"
+    r"(above|below|is\s+above|is\s+below|greater\s+than|less\s+than|<=|>=|<|>|==|=)\s+"
     r"(\d+(?:\.\d+)?)" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
     re.IGNORECASE
 )
 
 # 3. Indicator to Constant crossover (e.g., "RSI crosses above 60")
 IND_CONST_CROSS = re.compile(
-    r"^(EMA|SMA|VWAP|RSI|VIX)(?:\((\d+)\))?\s+"
+    r"^(EMA|SMA|VWAP|RSI|VIX)(?:[\s\(]+(\d+)\)?)?\s+"
     r"(crosses\s+above|crosses\s+below|crossover\s+above|crossover\s+below)\s+"
     r"(\d+(?:\.\d+)?)" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
     re.IGNORECASE
 )
 
-# 4. Price to Indicator comparison (e.g., "Price above 20 EMA", "Spot below VWAP")
+# 4. Price to Indicator comparison (e.g., "Price above 20 EMA", "Price should be above EMA 33", "Spot below VWAP")
 PRICE_IND_COMP = re.compile(
-    r"^(Price|Spot)\s+(above|below|is\s+above|is\s+below|greater\s+than|less\s+than)\s+"
-    r"(?:(\d+)\s+)?(EMA|SMA|VWAP)(?:\((\d+)\))?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
+    r"^(Price|Spot)\s+(?:should\s+be\s+)?(above|below|is\s+above|is\s+below|greater\s+than|less\s+than|<=|>=|<|>)\s+"
+    r"(?:(\d+)\s+)?(EMA|SMA|VWAP)(?:[\s\(]+(\d+)\)?)?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
     re.IGNORECASE
 )
 
 # 5. Price to Indicator crossover (e.g., "Price crosses above 20 EMA")
 PRICE_IND_CROSS = re.compile(
     r"^(Price|Spot)\s+(crosses\s+above|crosses\s+below|crossover\s+above|crossover\s+below)\s+"
-    r"(?:(\d+)\s+)?(EMA|SMA|VWAP)(?:\((\d+)\))?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
+    r"(?:(\d+)\s+)?(EMA|SMA|VWAP)(?:[\s\(]+(\d+)\)?)?" + TF_SUFFIX + CANDLE_CLOSE_PAT + r"$",
     re.IGNORECASE
 )
 

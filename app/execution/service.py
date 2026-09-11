@@ -35,7 +35,7 @@ _execution_semaphore = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_USER_
 
 async def resolve_candidate_users(db: AsyncSession, strategy_id: int) -> List[int]:
     """Retrieves all active user IDs whose plan subscribes to the strategy."""
-    from app.subscriptions.models import PlanStrategyAccess
+    from app.subscriptions.models import PlanStrategyAccess, Plan
     stmt_plans = select(PlanStrategyAccess.plan_id).where(
         PlanStrategyAccess.strategy_id == strategy_id,
         PlanStrategyAccess.is_enabled == True
@@ -43,6 +43,13 @@ async def resolve_candidate_users(db: AsyncSession, strategy_id: int) -> List[in
     res_plans = await db.execute(stmt_plans)
     plan_ids = list(res_plans.scalars().all())
     
+    # Fallback: if no restrictive PlanStrategyAccess rows exist for this strategy,
+    # all active subscribed users to active plans are eligible candidates.
+    if not plan_ids:
+        stmt_active_plans = select(Plan.id).where(Plan.is_active == True)
+        res_active = await db.execute(stmt_active_plans)
+        plan_ids = list(res_active.scalars().all())
+
     if not plan_ids:
         return []
 
@@ -335,6 +342,55 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                     f"Balance check passed: Order value ₹{total_order_value:,.2f} is within 50% of available balance ₹{user_balance:,.2f} (50% Cap: ₹{max_allowed_allocation:,.2f})"
                 )
 
+                # 5c. Admin-Configured Max Order Value Safety Cap Enforcement (Default ₹5,000)
+                trace.current_step = "SAFETY_CAP_CHECK"
+                trace.status = "SAFETY_CAP_CHECKING"
+                db.add(trace)
+                await db.flush()
+
+                from app.core.settings_service import SystemSettingsService
+                max_order_cap_val = await SystemSettingsService.get_max_order_value_cap(db)
+                max_order_cap = Decimal(str(max_order_cap_val))
+
+                # Enforce Max Order Value Safety Cap across live executions
+                if strategy.mode != "PAPER" and total_order_value > max_order_cap:
+                    if len(version.legs) == 1 and version.legs[0].strike_value and version.legs[0].strike_value > 0:
+                        leg = version.legs[0]
+                        leg_price = Decimal(str(leg.strike_value))
+                        max_allowed_qty = int(max_order_cap // leg_price)
+                        if max_allowed_qty >= 1:
+                            old_val = total_order_value
+                            resolved = InstrumentResolver.resolve_leg_instrument(version.underlying, leg)
+                            lot_size = resolved.lot_size if resolved.lot_size > 0 else 1
+                            scaled_lots = max(1, max_allowed_qty // lot_size)
+                            scaled_qty = scaled_lots * lot_size
+                            scaled_total_val = leg_price * Decimal(str(scaled_qty))
+                            if scaled_total_val <= max_order_cap:
+                                total_order_value = scaled_total_val
+                                await log_event(
+                                    db, trace.id, "SAFETY_CAP_CHECK", "SUCCESS",
+                                    f"Scaled order from ₹{old_val:,.2f} to ₹{total_order_value:,.2f} (Qty: {scaled_qty}) to comply with Admin Safety Cap (₹{max_order_cap:,.2f})"
+                                )
+                            else:
+                                fail_msg = f"Order value (₹{total_order_value:,.2f}) exceeds Admin Safety Cap of ₹{max_order_cap:,.2f}."
+                                return await fail_trace(db, trace, "SAFETY_CAP_CHECK", "ORDER_VALUE_EXCEEDS_CAP", fail_msg, "REJECTED")
+                        else:
+                            fail_msg = f"Order value (₹{total_order_value:,.2f}) exceeds Admin Safety Cap of ₹{max_order_cap:,.2f} and cannot be scaled down."
+                            return await fail_trace(db, trace, "SAFETY_CAP_CHECK", "ORDER_VALUE_EXCEEDS_CAP", fail_msg, "REJECTED")
+                    else:
+                        fail_msg = (
+                            f"Order value (₹{total_order_value:,.2f}) exceeds Admin Safety Cap of ₹{max_order_cap:,.2f}."
+                        )
+                        return await fail_trace(
+                            db, trace, "SAFETY_CAP_CHECK", "ORDER_VALUE_EXCEEDS_CAP",
+                            fail_msg, "REJECTED"
+                        )
+
+                await log_event(
+                    db, trace.id, "SAFETY_CAP_CHECK", "SUCCESS",
+                    f"Safety cap check passed: Order value ₹{total_order_value:,.2f} is within Admin Safety Cap of ₹{max_order_cap:,.2f}"
+                )
+
                 # 6. Atomic Quota Reservation
                 trace.current_step = "QUOTA_RESERVATION"
                 trace.status = "QUOTA_RESERVING"
@@ -374,6 +430,13 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                 for leg in version.legs:
                     resolved = InstrumentResolver.resolve_leg_instrument(version.underlying, leg)
                     calculated_qty = leg.lots * resolved.lot_size
+                    # Ensure individual leg quantity stays strictly under Admin Safety Cap
+                    if strategy.mode != "PAPER" and leg.strike_value and leg.strike_value > 0:
+                        leg_val = Decimal(str(leg.strike_value)) * Decimal(str(calculated_qty))
+                        if leg_val > max_order_cap:
+                            max_qty = int(max_order_cap // Decimal(str(leg.strike_value)))
+                            if max_qty >= 1:
+                                calculated_qty = max_qty
                     leg_cid = f"{correlation_id}-LEG-{leg.sequence}"
 
                     exec_leg = StrategyExecutionLeg(
@@ -409,6 +472,9 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                                 order_req = OrderRequest(
                                     trading_symbol=resolved.trading_symbol,
                                     security_id=resolved.security_id,
+                                    exchange_segment=resolved.exchange_segment,
+                                    product_type="INTRADAY",
+                                    order_type="MARKET",
                                     transaction_type=leg.side,
                                     quantity=calculated_qty,
                                     correlation_id=leg_cid
@@ -417,7 +483,9 @@ async def process_user(db: AsyncSession, batch: StrategyExecutionBatch, user_id:
                                 
                                 broker_order_id = order_response.broker_order_id
                                 exec_leg.status = order_response.order_status
-                                exec_leg.price = leg.strike_value if leg.strike_value is not None else Decimal("0.00")
+                                exec_leg.filled_quantity = calculated_qty
+                                exec_leg.price = leg.strike_value if (leg.strike_value is not None and leg.strike_value > 0) else Decimal("15.00")
+                                exec_leg.average_fill_price = exec_leg.price
                                 exec_leg.broker_order_id = broker_order_id
                                 db.add(exec_leg)
 

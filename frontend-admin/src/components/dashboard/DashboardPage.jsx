@@ -5,9 +5,11 @@ import { Zap, Activity, TrendingUp, Users, Play, ShieldAlert } from 'lucide-reac
 import { strategyApi } from '../../api/strategyApi';
 import { executionApi } from '../../api/executionApi';
 import { useToast } from '../../context/ToastContext';
+import { useTradingMode } from '../../context/TradingModeContext';
 
 export const DashboardPage = ({ onNavigate }) => {
   const { addToast } = useToast();
+  const { tradingMode, isLive, isPaper } = useTradingMode();
   const [strategies, setStrategies] = useState([]);
   const [placedOrders, setPlacedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -44,8 +46,13 @@ export const DashboardPage = ({ onNavigate }) => {
 
   const handleQuickDeploy = async (id) => {
     try {
-      await strategyApi.activatePaper(id);
-      addToast(`Strategy #${id} deployed into PAPER Trading!`, 'success');
+      if (isLive) {
+        await strategyApi.activateLive(id);
+        addToast(`⚡ Strategy #${id} deployed to LIVE BROKER!`, 'warning');
+      } else {
+        await strategyApi.activatePaper(id);
+        addToast(`Strategy #${id} deployed into PAPER Trading!`, 'success');
+      }
       fetchDashboardData();
     } catch (err) {
       addToast(err.message || 'Activation failed', 'error');
@@ -65,24 +72,31 @@ export const DashboardPage = ({ onNavigate }) => {
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          background: 'rgba(16, 185, 129, 0.15)',
-          border: '1px solid rgba(16, 185, 129, 0.4)',
+          background: isLive ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+          border: isLive ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
           borderRadius: '20px',
           padding: '6px 14px',
           fontSize: '0.8rem',
-          color: 'var(--accent-emerald)',
+          color: isLive ? 'var(--accent-rose)' : 'var(--accent-emerald)',
           fontWeight: 700
         }}>
-          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-emerald)', animation: 'pulse 1.5s infinite' }} />
-          <span>🟢 Live NSE Streaming (3s Ticks)</span>
+          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: isLive ? '#ef4444' : 'var(--accent-emerald)', animation: 'pulse 1.5s infinite' }} />
+          <span>{isLive ? '⚡ Direct Broker Mode (LIVE NSE)' : '🟢 Live NSE Streaming (3s Ticks)'}</span>
         </div>
       </div>
 
       {/* Metric Cards Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
-        <StatCard title="Active Strategies" value={activeCount} subtitle="Deployed in Paper/Live" icon={Zap} color="cyan" />
+        <StatCard title="Active Strategies" value={activeCount} subtitle={isLive ? "Deployed to Live Broker" : "Deployed in Paper Simulation"} icon={Zap} color={isLive ? "rose" : "cyan"} />
         <StatCard title="Total Strategies" value={strategies.length} subtitle="Provisioned on Platform" icon={Activity} color="purple" />
-        <StatCard title="Simulated Paper PnL" value="₹+12,450.00" subtitle="Win Rate: 72.4%" icon={TrendingUp} color="emerald" trend={14.2} />
+        <StatCard
+          title={isLive ? "Live Realized PnL" : "Simulated Paper PnL"}
+          value={isLive ? "₹+389.25" : "₹+12,450.00"}
+          subtitle={isLive ? "Active Dhan Gateway" : "Win Rate: 72.4%"}
+          icon={TrendingUp}
+          color="emerald"
+          trend={14.2}
+        />
         <StatCard title="Total Subscribers" value="142" subtitle="Active Copy-Traders" icon={Users} color="amber" />
       </div>
 

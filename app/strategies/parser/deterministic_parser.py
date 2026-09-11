@@ -84,7 +84,7 @@ def parse_logical_expression(text: str, default_timeframe: str = "15m") -> Optio
 
 def parse_deterministic_rule(text: str, default_timeframe: str = "15m") -> ParserResult:
     """Parses standard rule strings against compiled regex patterns."""
-    cleaned = text.strip()
+    cleaned = text.strip().rstrip(". ")
 
     # Strip common sentence wrappers/prefixes to expose core condition
     prefix_pat = r"^(?:avoid\s+entry\s+if|avoid\s+if|only\s+enter\s+if|only\s+trade\s+if|do\s+not\s+enter\s+if|don't\s+enter\s+if)\s+"
@@ -128,6 +128,45 @@ def parse_deterministic_rule(text: str, default_timeframe: str = "15m") -> Parse
             period=ind1_period,
             operator=op,
             price=ind2_name,
+            value=float(ind2_period),
+            timeframe=tf,
+            left=IndicatorOperand(indicator=ind1_name, period=ind1_period, timeframe=tf),
+            right=IndicatorOperand(indicator=ind2_name, period=ind2_period, timeframe=tf)
+        )
+        return ParserResult(status="SUPPORTED", rawText=text, parsedRule=parsed)
+
+    # 2b. Indicator to Indicator comparison (e.g. "EMA 8 > EMA 33", "8 EMA above 33 EMA", "EMA(8) >= EMA(33)")
+    m = pat.IND_IND_COMP.match(cleaned_cond)
+    if m:
+        ind1_name = m.group(2).upper()
+        ind1_period = int(m.group(1)) if m.group(1) else (int(m.group(3)) if m.group(3) else 14)
+        
+        verb = m.group(4).lower()
+        ind2_name = m.group(6).upper()
+        ind2_period = int(m.group(5)) if m.group(5) else (int(m.group(7)) if m.group(7) else 14)
+        
+        tf = m.group(8) if m.group(8) else default_timeframe
+        
+        if verb in (">", "above", "is above", "greater than"):
+            op = "GREATER_THAN"
+        elif verb in ("<", "below", "is below", "less than"):
+            op = "LESS_THAN"
+        elif verb in (">=", "greater than equal"):
+            op = "GREATER_THAN_EQUAL"
+        elif verb in ("<=", "less than equal"):
+            op = "LESS_THAN_EQUAL"
+        elif verb in ("==", "=", "equal", "equals"):
+            op = "EQUAL"
+        else:
+            op = "GREATER_THAN"
+        
+        from app.strategies.rules.rule_schema import IndicatorOperand
+        parsed = ParsedRule(
+            type="INDICATOR_COMPARISON",
+            indicator=f"{ind1_name}_{ind1_period}" if ind1_period else ind1_name,
+            period=ind1_period,
+            operator=op,
+            price=f"{ind2_name}_{ind2_period}" if ind2_period else ind2_name,
             value=float(ind2_period),
             timeframe=tf,
             left=IndicatorOperand(indicator=ind1_name, period=ind1_period, timeframe=tf),

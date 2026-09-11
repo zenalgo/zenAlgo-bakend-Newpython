@@ -72,6 +72,7 @@ class LiveIndicatorEngine:
 
         self._last_tick_time: Optional[datetime] = None
         self._fallback_task: Optional[asyncio.Task] = None
+        self._strategy_last_signal_time: Dict[int, float] = {}
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -256,7 +257,7 @@ class LiveIndicatorEngine:
                 await self._broadcast_snapshot()
 
     async def _evaluate_and_dispatch_conditions(self, trigger_type: str = "CANDLE_CLOSE") -> None:
-        """Check active strategy conditions and fire signals."""
+        """Check active strategy conditions, emit database signals, and trigger order execution."""
         if not self.snapshot:
             return
 
@@ -272,17 +273,81 @@ class LiveIndicatorEngine:
                     trigger_type=trigger_type,
                 )
 
+                now_ts = datetime.now(timezone.utc).timestamp()
+
                 for sig in signals:
                     self.recent_signals.appendleft(sig)
                     logger.info(
                         f"🎯 SIGNAL FIRED: [{sig.signal}] {sig.symbol} {sig.condition_text} "
-                        f"({sig.indicator_name}={sig.indicator_value}) -> Strategy {sig.strategy_name}"
+                        f"({sig.indicator_name}={sig.indicator_value}) -> Strategy {sig.strategy_name} (ID: {sig.strategy_id})"
                     )
                     # Broadcast signal event to WebSocket subscribers
                     await CalcEngineWSManager.broadcast({
                         "type": "SIGNAL_EVENT",
                         "data": sig.model_dump(mode="json"),
                     })
+
+                    # Deduplication / cooldown check: 60s cooldown per strategy
+                    last_sig_time = self._strategy_last_signal_time.get(sig.strategy_id, 0.0)
+                    if now_ts - last_sig_time < 60.0:
+                        continue
+
+                    # Process ENTRY or EXIT
+                    if sig.signal.upper() == "ENTRY":
+                        from app.strategies.models import Strategy, StrategyExecution
+                        from app.execution.models import StrategySignal
+                        from app.execution import service as exec_service
+                        import pytz
+                        from decimal import Decimal
+                        from sqlalchemy import select
+
+                        res_strat = await db.execute(select(Strategy).where(Strategy.id == sig.strategy_id))
+                        strat = res_strat.scalar_one_or_none()
+                        if not strat or not strat.is_active or strat.status not in ("ACTIVE_LIVE", "ACTIVE_PAPER", "ACTIVE", "PAPER", "LIVE"):
+                            continue
+
+                        # Check if an execution is already RUNNING for this strategy
+                        stmt_running = select(StrategyExecution).where(
+                            StrategyExecution.strategy_id == sig.strategy_id,
+                            StrategyExecution.status == "RUNNING"
+                        )
+                        res_running = await db.execute(stmt_running)
+                        if res_running.scalar_one_or_none():
+                            logger.info(f"Strategy {sig.strategy_id} already has a RUNNING execution. Skipping duplicate entry.")
+                            continue
+
+                        zone_kolkata = pytz.timezone("Asia/Kolkata")
+                        now_ist = datetime.now(zone_kolkata)
+                        today = now_ist.date()
+                        entry_time = now_ist.strftime("%H:%M:%S")[:10]
+                        sig_key = f"SIG-{sig.strategy_id}-{int(now_ts)}"
+
+                        db_signal = StrategySignal(
+                            strategy_id=sig.strategy_id,
+                            strategy_version_id=strat.current_version_id,
+                            trading_date=today,
+                            entry_time=entry_time,
+                            signal_key=sig_key,
+                            signal_type="ENTRY",
+                            direction="BUY",
+                            status="CREATED",
+                            price=Decimal(str(sig.indicator_value or self.current_ltp or 100.0)),
+                            reason=sig.condition_text
+                        )
+                        db.add(db_signal)
+                        await db.commit()
+                        await db.refresh(db_signal)
+
+                        self._strategy_last_signal_time[sig.strategy_id] = now_ts
+                        logger.info(f"🚀 Spawning order execution batch for Signal ID {db_signal.id} on Strategy {sig.strategy_name}...")
+                        asyncio.create_task(exec_service.execute_signal_batch(db_signal.id))
+
+                    elif sig.signal.upper() == "EXIT":
+                        from app.execution import service as exec_service
+                        self._strategy_last_signal_time[sig.strategy_id] = now_ts
+                        logger.info(f"🛑 Triggering square-off for Strategy {sig.strategy_name} on EXIT condition: {sig.condition_text}")
+                        asyncio.create_task(exec_service.exit_all_positions(db, sig.strategy_id))
+
         except Exception as e:
             logger.debug(f"Condition evaluation loop error: {e}")
 

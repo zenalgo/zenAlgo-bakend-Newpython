@@ -27,6 +27,7 @@ from app.instruments.service import seed_instruments_if_empty
 from app.admin.connected_users_router import router as admin_broker_users_router
 from app.admin.reports_router import router as admin_reports_router
 from app.calculation_engine.router import router as calc_engine_router
+from app.core.settings_router import router as settings_router
 
 app = FastAPI(
     title="ZenAlgo Platform Backend",
@@ -71,11 +72,14 @@ async def on_startup():
     await redis_manager.init_redis()
     asyncio.create_task(order_reconciliation_worker.start())
     try:
-        from app.core.database import AsyncSessionLocal
+        from app.core.database import AsyncSessionLocal, engine, Base
+        import app.core.settings_model
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
         async with AsyncSessionLocal() as session:
             await seed_instruments_if_empty(session)
     except Exception as e:
-        print(f"Instrument seeder notice: {e}")
+        print(f"Startup initialization notice: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -100,6 +104,7 @@ app.include_router(ws_router)
 app.include_router(calc_engine_router, prefix="/api/v1")
 app.include_router(admin_broker_users_router)
 app.include_router(admin_reports_router)
+app.include_router(settings_router, prefix="/api/v1")
 
 @app.get("/health", tags=["Health"])
 async def health_check():

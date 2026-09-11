@@ -37,6 +37,9 @@ class BrokerAccount(Base):
     def credentials(self) -> dict:
         return decrypt_credentials(self.encrypted_credentials)
 
+    def get_credentials(self) -> dict:
+        return self.credentials
+
     def set_credentials(self, cred_dict: dict) -> None:
         self.encrypted_credentials = encrypt_credentials(cred_dict)
 

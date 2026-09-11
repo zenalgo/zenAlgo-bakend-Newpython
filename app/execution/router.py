@@ -995,9 +995,13 @@ async def get_trader_placed_orders(
 ):
     from app.strategies.models import Strategy, StrategyExecution, StrategyExecutionLeg
     stmt = (
-        select(StrategyExecution, Strategy)
-        .join(Strategy, StrategyExecution.strategy_id == Strategy.id)
+        select(StrategyExecution)
         .where(StrategyExecution.user_id == current_user.id)
+        .options(
+            selectinload(StrategyExecution.strategy),
+            selectinload(StrategyExecution.strategy_version),
+            selectinload(StrategyExecution.legs).selectinload(StrategyExecutionLeg.strategy_leg)
+        )
         .order_by(StrategyExecution.id.desc())
         .limit(50)
     )
@@ -1005,26 +1009,48 @@ async def get_trader_placed_orders(
         stmt = stmt.where(StrategyExecution.strategy_id == strategyId)
 
     res = await db.execute(stmt)
-    rows = res.all()
+    executions = res.scalars().all()
 
     orders_data = []
-    for exec_record, strat in rows:
+    for exec_record in executions:
+        strat = exec_record.strategy
+        strat_ver = exec_record.strategy_version
+        und = strat_ver.underlying if (strat_ver and strat_ver.underlying) else (strat.name if strat else "INDEX")
+        strat_mode = strat.mode if strat else "PAPER"
+
+        legs_data = []
+        for l in (exec_record.legs or []):
+            leg_side = l.strategy_leg.side if l.strategy_leg else "BUY"
+            leg_strike = l.strategy_leg.strike_selection if l.strategy_leg else "ATM"
+            legs_data.append({
+                "id": l.id,
+                "brokerOrderId": l.broker_order_id,
+                "side": leg_side,
+                "symbol": f"{und} {leg_strike} {leg_side}",
+                "quantity": l.quantity or l.filled_quantity or 0,
+                "price": float(l.price or l.average_fill_price or 0.0),
+                "status": l.status
+            })
+
+        if not legs_data:
+            legs_data.append({
+                "side": "BUY",
+                "symbol": f"{und} ATM CE",
+                "quantity": 25,
+                "price": 0.0,
+                "status": exec_record.status,
+                "brokerOrderId": None
+            })
+
         orders_data.append({
             "executionId": exec_record.id,
-            "strategyId": strat.id,
-            "strategyName": strat.name,
-            "mode": exec_record.mode,
+            "strategyId": strat.id if strat else exec_record.strategy_id,
+            "strategyName": strat.name if strat else f"Strategy #{exec_record.strategy_id}",
+            "mode": strat_mode,
             "status": exec_record.status,
             "pnl": float(exec_record.realized_pnl or 0.0),
             "entryTime": exec_record.entry_time.isoformat() if exec_record.entry_time else None,
-            "legs": [
-                {
-                    "side": "BUY",
-                    "symbol": f"{strat.name[:12]} 25050 CE",
-                    "quantity": 50,
-                    "price": 100.00
-                }
-            ]
+            "legs": legs_data
         })
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))

@@ -19,6 +19,10 @@ from app.core.database import AsyncSessionLocal
 from app.strategies.models import Strategy, StrategyVersion, StrategyEntryDay
 from app.execution.models import StrategySignal
 from app.execution import service as exec_service
+from app.brokers.bootstrap import bootstrap_broker_adapters
+
+# Ensure broker adapters are registered in the scheduler process
+bootstrap_broker_adapters()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scheduler")
@@ -236,12 +240,85 @@ async def check_and_execute_live_exits() -> None:
         except Exception as ex:
             logger.error(f"Error in check_and_execute_live_exits: {str(ex)}")
 
+async def sync_and_scan_market_strategies() -> None:
+    """
+    Automated Platform-Wide Market Scanner:
+    1. Discovers all active strategies across all asset underlyings.
+    2. Spawns and maintains LiveIndicatorEngines calculating real-time indicators for each asset symbol.
+    3. Evaluates strategy conditions against fresh market data and indicators.
+    4. Automatically emits signals and triggers live order execution.
+    """
+    from app.calculation_engine.registry import CalcEngineRegistry
+    from app.calculation_engine.engine import LiveIndicatorEngine
+    from app.calculation_engine.router import resolve_dhan_credentials_and_sec_id
+    from app.strategies.instrument_resolver import DHAN_EQUITY_SECS
+
+    async with AsyncSessionLocal() as db:
+        try:
+            stmt = (
+                select(Strategy, StrategyVersion.underlying)
+                .join(StrategyVersion, Strategy.current_version_id == StrategyVersion.id)
+                .where(
+                    Strategy.is_active == True,
+                    Strategy.status.in_(["ACTIVE_LIVE", "ACTIVE_PAPER", "ACTIVE", "LIVE", "PAPER"])
+                )
+            )
+            res = await db.execute(stmt)
+            active_pairs = res.all()
+
+            unique_symbols = set()
+            for strat, underlying in active_pairs:
+                clean_sym = (underlying or "NIFTY").upper().strip()
+                if "NIFTY 50" in clean_sym or clean_sym == "NIFTY":
+                    clean_sym = "NIFTY"
+                elif "BANK" in clean_sym:
+                    clean_sym = "BANKNIFTY"
+                elif "FIN" in clean_sym:
+                    clean_sym = "FINNIFTY"
+                unique_symbols.add(clean_sym)
+
+            for sym in unique_symbols:
+                engine = CalcEngineRegistry.get(sym)
+                if not engine or not getattr(engine, "is_running", False):
+                    creds, sec_id, exch = await resolve_dhan_credentials_and_sec_id(db, sym)
+                    if not sec_id:
+                        if sym in DHAN_EQUITY_SECS:
+                            sec_id = DHAN_EQUITY_SECS[sym]["security_id"]
+                            exch = DHAN_EQUITY_SECS[sym]["exchange_segment"]
+                        elif sym == "NIFTY":
+                            sec_id = "13"
+                            exch = "IDX_I"
+                        elif sym == "BANKNIFTY":
+                            sec_id = "25"
+                            exch = "IDX_I"
+                        elif sym == "FINNIFTY":
+                            sec_id = "27"
+                            exch = "IDX_I"
+
+                    logger.info(f"Auto-spawning LiveIndicatorEngine for underlying: {sym} (sec_id: {sec_id})")
+                    engine = LiveIndicatorEngine(
+                        symbol=sym,
+                        timeframe="5m",
+                        security_id=sec_id,
+                        exchange=exch,
+                        credentials=creds
+                    )
+                    await engine.start()
+
+                # Trigger condition evaluation against the fresh snapshot
+                if engine and engine.snapshot:
+                    await engine._evaluate_and_dispatch_conditions(trigger_type="SCAN")
+
+        except Exception as e:
+            logger.error(f"Error in sync_and_scan_market_strategies: {e}")
+
 async def run_scheduler():
     scheduler = AsyncIOScheduler(timezone=ZONE_KOLKATA)
     scheduler.add_job(check_and_trigger_strategies, "cron", second="0")
     scheduler.add_job(check_and_execute_live_exits, "interval", seconds=15)
+    scheduler.add_job(sync_and_scan_market_strategies, "interval", seconds=10)
     scheduler.start()
-    logger.info("Apscheduler triggered successfully with entry cron and 15s live exit interval (Asia/Kolkata)")
+    logger.info("Apscheduler triggered successfully with entry cron, 15s exit interval, and 10s automated market scanner (Asia/Kolkata)")
     
     # Keep the async loop running
     while True:

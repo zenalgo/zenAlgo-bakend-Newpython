@@ -509,33 +509,43 @@ def calc_vwap(candles: List[Dict]) -> Dict:
 # EMA (Multiple periods)
 # ---------------------------------------------------------------------------
 
-def calc_ema(candles: List[Dict]) -> Dict:
+def calc_ema(candles: List[Dict], periods: Optional[List[int]] = None) -> Dict:
     closes = _col(candles, "close")
+    if periods is None:
+        periods = [8, 9, 20, 33, 50, 200]
+
     results = {}
-    for period in [9, 20, 50, 200]:
+    for period in periods:
         series = _ema_series(closes, period)
         vals = [v for v in series if v is not None]
         results[f"ema{period}"] = round(vals[-1], 2) if vals else None
 
-    current_price = closes[-1] if closes else None
-
-    # Signal: 9 EMA vs 20 EMA
+    # Signals: Check 8 vs 33 and 9 vs 20 EMA
+    e8 = results.get("ema8")
+    e33 = results.get("ema33")
     e9 = results.get("ema9")
     e20 = results.get("ema20")
     e50 = results.get("ema50")
 
-    if e9 and e20 and e9 > e20:
+    if e8 is not None and e33 is not None and e8 > e33:
+        signal, color, desc = "BUY", "green", f"EMA8 ({e8:.2f}) > EMA33 ({e33:.2f}) — bullish alignment"
+    elif e8 is not None and e33 is not None and e8 < e33:
+        signal, color, desc = "SELL", "red", f"EMA8 ({e8:.2f}) < EMA33 ({e33:.2f}) — bearish alignment"
+    elif e9 is not None and e20 is not None and e9 > e20:
         signal, color, desc = "BUY", "green", f"EMA9 ({e9:.2f}) > EMA20 ({e20:.2f}) — bullish crossover"
-    elif e9 and e20 and e9 < e20:
+    elif e9 is not None and e20 is not None and e9 < e20:
         signal, color, desc = "SELL", "red", f"EMA9 ({e9:.2f}) < EMA20 ({e20:.2f}) — bearish crossover"
     else:
         signal, color, desc = "NEUTRAL", "amber", "EMA alignment neutral"
 
     return {
-        "name": "EMA", "display_name": "EMA (9/20/50/200)",
-        "value": e20,
+        "name": "EMA",
+        "display_name": "EMA (8/9/20/33/50/200)",
+        "value": e8 or e20,
         "secondary": results,
-        "signal": signal, "signal_color": color, "description": desc,
+        "signal": signal,
+        "signal_color": color,
+        "description": desc,
         "history": []
     }
 
@@ -666,6 +676,18 @@ def compute_all_indicators(
         try:
             result = fn(candles)
             results.append(result)
+            if result.get("name") == "EMA" and isinstance(result.get("secondary"), dict):
+                for p_key, p_val in result["secondary"].items():
+                    period_num = p_key.replace("ema", "")
+                    results.append({
+                        "name": f"EMA_{period_num}",
+                        "display_name": f"EMA ({period_num})",
+                        "value": p_val,
+                        "signal": result.get("signal", "NEUTRAL"),
+                        "signal_color": result.get("signal_color", "amber"),
+                        "description": f"EMA {period_num} period value: {p_val}",
+                        "history": []
+                    })
         except Exception as e:
             logger.warning("Indicator %s failed: %s", fn.__name__, str(e))
 

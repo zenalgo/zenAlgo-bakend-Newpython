@@ -260,23 +260,41 @@ class DhanAdapter(BrokerAdapter):
                 raw_response={"orderId": order_id, "orderStatus": "OPEN"}
             )
 
+        exchange_segment = (order_req.exchange_segment or "NSE_EQ").upper()
+        if exchange_segment in ["NSE_FN", "FNO", "NFO"]:
+            exchange_segment = "NSE_FNO"
+        elif exchange_segment in ["NSE", "EQ"]:
+            exchange_segment = "NSE_EQ"
+
+        product_type = (order_req.product_type or "INTRADAY").upper()
+        if product_type in ["MIS", "INTRADAY"]:
+            product_type = "INTRADAY"
+        elif product_type in ["NRML", "MARGIN"]:
+            product_type = "MARGIN"
+        elif product_type in ["CNC", "DELIVERY"]:
+            product_type = "CNC"
+
+        order_type = (order_req.order_type or "MARKET").upper()
+        price = float(order_req.price or 0.0)
+        if order_type == "MARKET":
+            price = 0.0
+
         payload = {
             "dhanClientId": client_id,
-            "correlationId": order_req.correlation_id or f"CID-{str(uuid.uuid4())[:12]}",
+            "correlationId": (order_req.correlation_id or f"CID-{str(uuid.uuid4())[:12]}")[:25],
             "transactionType": order_req.transaction_type.upper(),
-            "exchangeSegment": order_req.exchange_segment or "NSE_FNO",
-            "productType": order_req.product_type,
-            "orderType": order_req.order_type,
-            "validity": order_req.validity,
+            "exchangeSegment": exchange_segment,
+            "productType": product_type,
+            "orderType": order_type,
+            "validity": order_req.validity or "DAY",
             "securityId": str(order_req.security_id),
-            "tradingSymbol": order_req.trading_symbol,
             "quantity": int(order_req.quantity),
-            "price": float(order_req.price),
+            "price": price,
         }
 
         # Include triggerPrice for SL order types
-        if order_req.order_type.upper() in ("STOP_LOSS", "STOP_LOSS_MARKET"):
-            payload["triggerPrice"] = float(order_req.trigger_price)
+        if order_type in ("STOP_LOSS", "STOP_LOSS_MARKET"):
+            payload["triggerPrice"] = float(order_req.trigger_price or 0.0)
 
         data = await dhan_http_client._request(
             method="POST",

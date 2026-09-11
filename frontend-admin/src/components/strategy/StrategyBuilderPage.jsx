@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { strategyApi } from '../../api/strategyApi';
 import { useToast } from '../../context/ToastContext';
+import { useTradingMode } from '../../context/TradingModeContext';
 import { AIStrategyGeneratorModal } from './AIStrategyGeneratorModal';
 
 // Institutional Reference Preset Payloads
@@ -106,14 +107,23 @@ const PRESETS = {
 
 export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEditing }) => {
   const { addToast } = useToast();
+  const { tradingMode } = useTradingMode();
   const [activeTab, setActiveTab] = useState('FORM'); // 'FORM' or 'JSON'
   const [loading, setLoading] = useState(false);
   const [fetchingExisting, setFetchingExisting] = useState(false);
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
 
   // Core Form State
-  const [stratState, setStratState] = useState(PRESETS.EMA_PULLBACK);
-  const [jsonText, setJsonText] = useState(JSON.stringify(PRESETS.EMA_PULLBACK, null, 2));
+  const [stratState, setStratState] = useState(() => ({
+    ...PRESETS.EMA_PULLBACK,
+    mode: tradingMode || 'LIVE',
+    status: tradingMode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'
+  }));
+  const [jsonText, setJsonText] = useState(() => JSON.stringify({
+    ...PRESETS.EMA_PULLBACK,
+    mode: tradingMode || 'LIVE',
+    status: tradingMode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'
+  }, null, 2));
 
   // Sync Form to JSON
   const updateStrat = (updates) => {
@@ -137,6 +147,21 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
     setJsonText(JSON.stringify(updated, null, 2));
   };
 
+  // Sync global navbar tradingMode to builder state when creating a new strategy
+  useEffect(() => {
+    if (!editingStrategyId && tradingMode) {
+      setStratState((prev) => {
+        const updated = {
+          ...prev,
+          mode: tradingMode,
+          status: tradingMode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT',
+        };
+        setJsonText(JSON.stringify(updated, null, 2));
+        return updated;
+      });
+    }
+  }, [tradingMode, editingStrategyId]);
+
   // Fetch Existing Strategy for Editing if editingStrategyId is provided
   useEffect(() => {
     if (editingStrategyId) {
@@ -154,7 +179,8 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
               description: data.description || '',
               underlying: data.underlying || 'NIFTY 50',
               entryTimeframe: data.timeframe || '5m',
-              status: data.status || 'DRAFT',
+              mode: data.mode || (data.status === 'ACTIVE_LIVE' ? 'LIVE' : 'PAPER'),
+              status: data.status || (data.mode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
               entryConditions: (data.entryConditions || []).map((c) =>
                 typeof c === 'string' ? c : c.rawText || c.name || JSON.stringify(c)
               ),
@@ -301,7 +327,8 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         description: stratState.description,
         underlying: stratState.underlying || 'NIFTY 50',
         timeframe: stratState.entryTimeframe || '5m',
-        mode: 'PAPER',
+        mode: stratState.mode || tradingMode || 'PAPER',
+        status: stratState.status || (stratState.mode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
         entrySetting: {
           entryType: 'INTRADAY',
           entryTime: '09:15',
@@ -333,11 +360,11 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
     try {
       if (editingStrategyId) {
         await strategyApi.updateStrategy(editingStrategyId, finalPayload);
-        addToast(`Strategy #${editingStrategyId} updated successfully!`, 'success');
+        addToast(`Strategy #${editingStrategyId} updated successfully in ${finalPayload.mode} mode!`, 'success');
         if (onClearEditing) onClearEditing();
       } else {
         const res = await strategyApi.createStrategy(finalPayload);
-        addToast(`Strategy "${finalPayload.name}" saved! ID: #${res.data?.id || 'NEW'}`, 'success');
+        addToast(`Strategy "${finalPayload.name}" saved in ${finalPayload.mode} mode! ID: #${res.data?.id || 'NEW'}`, 'success');
       }
       if (onNavigate) onNavigate('strategies');
     } catch (err) {
@@ -364,7 +391,8 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         description: stratState.description,
         underlying: stratState.underlying || 'NIFTY 50',
         timeframe: stratState.entryTimeframe || '5m',
-        mode: 'PAPER',
+        mode: stratState.mode || tradingMode || 'PAPER',
+        status: stratState.status || (stratState.mode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'),
         entrySetting: {
           entryType: 'INTRADAY',
           entryTime: '09:15',
@@ -404,8 +432,13 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
         addToast(`Strategy "${finalPayload.name}" saved!`, 'success');
       }
       if (savedId) {
-        await strategyApi.activatePaper(savedId);
-        addToast(`🚀 Strategy #${savedId} activated live in PAPER mode!`, 'success');
+        if (finalPayload.mode === 'LIVE' || finalPayload.status === 'ACTIVE_LIVE') {
+          await strategyApi.activateLive(savedId);
+          addToast(`⚡ Strategy #${savedId} deployed and activated LIVE on broker!`, 'success');
+        } else {
+          await strategyApi.activatePaper(savedId);
+          addToast(`🚀 Strategy #${savedId} deployed and activated in PAPER mode!`, 'success');
+        }
       }
       if (onClearEditing) onClearEditing();
       if (onNavigate) onNavigate('strategies');
@@ -622,9 +655,18 @@ export const StrategyBuilderPage = ({ onNavigate, editingStrategyId, onClearEdit
               <div>
                 <label>Trading Mode</label>
                 <select
-                  value={stratState.mode || 'PAPER'}
-                  onChange={(e) => updateStrat({ mode: e.target.value })}
+                  value={stratState.mode || tradingMode || 'PAPER'}
+                  onChange={(e) => {
+                    const newMode = e.target.value;
+                    updateStrat({
+                      mode: newMode,
+                      status: newMode === 'LIVE' ? 'ACTIVE_LIVE' : 'DRAFT'
+                    });
+                  }}
                   className="input-field"
+                  style={{
+                    borderColor: (stratState.mode || tradingMode) === 'LIVE' ? 'var(--accent-emerald)' : 'var(--accent-cyan)'
+                  }}
                 >
                   <option value="PAPER">📝 PAPER (Live NSE Ticks)</option>
                   <option value="LIVE">⚡ LIVE (Direct Broker Gateway)</option>
